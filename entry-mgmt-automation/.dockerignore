@@ -1,0 +1,9 @@
+# API image: skip tests, dev, and heavy data when not needed
+tests/
+__pycache__/
+*.pyc
+.env
+.git/
+frontend/
+*.md
+.pytest_cache/

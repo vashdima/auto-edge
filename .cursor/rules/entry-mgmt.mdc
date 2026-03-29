@@ -1,0 +1,17 @@
+---
+description: Conventions and state machine for entry_mgmt.pine
+globs: pine/entry_mgmt.pine
+alwaysApply: false
+---
+
+# entry_mgmt.pine rules
+
+- **Use the architecture doc:** When working on this file, read [pine/entry_mgmt-architecture.md](pine/entry_mgmt-architecture.md) first for section map, state machine, and definition of done. Include test in TradingView and doc update (if sections/states/vars/lines changed) as steps in any plan.
+- **Pine style:** Use `//@version=5` and `ta.*`/`math.*`/`str.*`. Use `var` for state that persists across bars; use `na` for unset and guard with `not na(x)` before use.
+- **Inputs:** Follow existing groups (Entry Detection, Context & Validation, Risk Management, Manual Controls, Alerts). Use `input.int`/`input.float`/`input.bool` with minval/step/tooltip where relevant.
+- **Context & validation:** Entries require both context and validation to be bullish (`htfTrendBullish` and `validationSignal`). The C:/V: watermark (top-right) shows timeframes with green text when bullish, black when not; do not remove this when adding bearish logic later.
+- **Drawing:** Respect `max_lines_count`/`max_labels_count`; delete lines/labels when no longer needed. When adding a new level (e.g. TP2), add it to every block that creates, updates, or deletes lines/labels.
+- **State machine:** Single trade flow: NO_TRADE -> PENDING -> IN_TRADE -> COMPLETED -> (after 3 bars) -> NO_TRADE. When adding a transition or exit type: update `tradeState` in one place; in every cleanup branch, delete all four line/label types and reset the same `var` set (entryPrice, stopLossPrice, breakEvenPrice, takeProfitPrice, entryBarIndex, etc.).
+- **Break-even:** "BE triggered" means SL is logically at entry. "Exit at BE" only when `breakEvenTriggered` and `wasInProfitAfterBE` and price at/below entry. Do not add BE exit logic that ignores `wasInProfitAfterBE`.
+- **Definition of done:** Before considering a change complete: (1) Test in TradingView. (2) Update [pine/entry_mgmt-architecture.md](pine/entry_mgmt-architecture.md) if you changed sections, states, key vars, or line/label lifecycle. (3) Update this rule file if you added a new convention or invariant.
+- **Reference:** See [pine/entry_mgmt-architecture.md](pine/entry_mgmt-architecture.md) for section map and line ranges.

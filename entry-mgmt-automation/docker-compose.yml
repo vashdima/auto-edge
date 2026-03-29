@@ -1,0 +1,27 @@
+# Entry-mgmt API + frontend in Docker. Data (SQLite) and config are mounted from the host.
+# Run from pine/entry-mgmt-automation: docker compose up --build
+# Then open http://localhost:80 (frontend) and API at http://localhost:8000
+# Ensure data/ and config.yaml exist (or mount your own).
+
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./config.yaml:/app/config.yaml
+    environment:
+      - PYTHONUNBUFFERED=1
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Browser calls the API at this URL (host-visible)
+        VITE_API_URL: http://localhost:8000
+    ports:
+      - "80:80"
+    depends_on:
+      - api

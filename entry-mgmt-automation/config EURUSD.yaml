@@ -1,0 +1,41 @@
+# Config template for entry_mgmt automation (scanner + backend).
+# Maps to inputs in entry_mgmt.pine. Only params that affect scan/calculations are included.
+# UI-only (showHighlight, colors, manual toggles, alerts) are omitted.
+
+# --- Scan window (Oanda fetch will add a buffer before "from" for MA warm-up) ---
+scan:
+  from: "2025-05-01T00:00:00Z"   # ISO 8601 UTC; start of range to scan for entries
+  to:   "2025-08-01T23:59:59Z"   # end of range
+
+# --- Run (B2.4: named run; same key overwrites prior raw_trades) ---
+run:
+  key: "eur_usd_h1_2025_v1"
+  overwrite: true
+
+# --- Timeframes (entry = chart TF; context = HTF trend; validation = validation TF) ---
+# Oanda granularity mapping: M1, M5, M15, M30, H1, H4, D, W
+timeframes:
+  entry:     "H1"   # chart TF (Pine: chart period; here set explicitly)
+  validation: "D"    # Pine: validationTF "Validation timeframe"
+  context:   "W"     # Pine: htfTrendTF "Trend timeframe (Context)"
+
+# --- Entry Detection (Pine: lines 6-10) ---
+entry_detection:
+  slowEMAPeriod:       100  # slow = long period (smooth), min 1
+  mediumEMAPeriod:      50  # Pine default 50, min 1
+  fastEMAPeriod:        20  # fast = short period (breakout EMA), min 1
+  maxCandlesAfterBreak: 5  # Pine default 5, min 1, max 20
+  maxCandlesAfterPause: 20  # Cancel PENDING if price does not cross entry within this many bars
+  maxDistanceFromEMA:  2.0 # Pine default 2.0, min 0.1 step 0.1 (ATR multiples)
+
+# --- Risk Management (Pine: lines 20-23) ---
+risk_management:
+  atrPeriod:     14   # Pine default 14, min 1
+  atrMultiplier: 1.5  # Pine default 1.5, min 0.1 step 0.1 (SL = entry - atr * this)
+  rrBreakEven:   1.0  # Pine default 1.0, min 0.1 step 0.1 (R:R to trigger BE)
+  rrTakeProfit:  4.0  # Pine default 4.0, min 0.1 step 0.1 (R:R for TP)
+
+# --- Optional: symbols to scan (if not provided, a default list may be used) ---
+symbols:
+  # - "EUR_USD"
+  - "EUR_USD"

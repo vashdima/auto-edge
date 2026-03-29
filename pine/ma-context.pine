@@ -1,0 +1,58 @@
+//@version=5
+indicator("Trend Highlight", overlay=true)
+
+//==================== Inputs ====================
+// Trend Highlight
+htfTrendTF = input.timeframe("W", "Trend timeframe")
+showHighlight = input.bool(true, "Show trend highlight (enable/disable)")
+highlightColor = input.color(color.new(color.green, 90), "Trend highlight color")
+
+// Validation Signal
+validationTF = input.timeframe("D", "Validation timeframe")
+showValidation = input.bool(true, "Show validation signal (enable/disable)")
+validationColor = input.color(color.green, "Validation line color")
+
+//==================== Trend Highlight ====================
+htfEMA20  = request.security(syminfo.tickerid, htfTrendTF, ta.ema(close, 20), lookahead=barmerge.lookahead_off)
+htfEMA100 = request.security(syminfo.tickerid, htfTrendTF, ta.ema(close, 100), lookahead=barmerge.lookahead_off)
+htfClose  = request.security(syminfo.tickerid, htfTrendTF, close, lookahead=barmerge.lookahead_off)
+
+htfTrendBullish = htfEMA20 > htfEMA100 and htfClose > htfEMA20
+bgcolor(showHighlight and htfTrendBullish ? highlightColor : na, title="Trend Highlight")
+
+//==================== Validation Signal ====================
+valEMA20 = request.security(syminfo.tickerid, validationTF, ta.ema(close, 20), lookahead=barmerge.lookahead_off)
+valEMA20_prev = request.security(syminfo.tickerid, validationTF, ta.ema(close, 20)[1], lookahead=barmerge.lookahead_off)
+valOpen = request.security(syminfo.tickerid, validationTF, open, lookahead=barmerge.lookahead_off)
+valHigh = request.security(syminfo.tickerid, validationTF, high, lookahead=barmerge.lookahead_off)
+valLow = request.security(syminfo.tickerid, validationTF, low, lookahead=barmerge.lookahead_off)
+valClose = request.security(syminfo.tickerid, validationTF, close, lookahead=barmerge.lookahead_off)
+
+// State tracking: locked or unlocked
+var bool isLocked = false
+
+// Check for full candle below 20 EMA (lock)
+fullCandleBelow = valHigh < valEMA20
+if fullCandleBelow
+    isLocked := true
+
+// Check for full candle above 20 EMA (unlock)
+fullCandleAbove = valLow > valEMA20
+if fullCandleAbove
+    isLocked := false
+
+// Basic conditions
+ema20SlopingUp = valEMA20 > valEMA20_prev
+priceAboveEMA = valOpen > valEMA20 or valClose > valEMA20 or valHigh > valEMA20 or valLow > valEMA20
+
+// Show signal when unlocked and conditions met
+validationSignal = not isLocked and ema20SlopingUp and priceAboveEMA
+
+// Draw indicator at bottom when signal is active
+plotchar(showValidation and validationSignal, title="Validation Signal", char="▬", location=location.bottom, color=validationColor, size=size.tiny)
+
+//==================== Watermark ====================
+var table watermark = table.new(position.top_right, 1, 1, bgcolor=color.new(color.white, 100), frame_width=0, border_width=0)
+if barstate.islast
+    labelText = "C: " + htfTrendTF + "\nV: " + validationTF
+    table.cell(watermark, 0, 0, labelText, text_color=color.black, text_size=size.large)

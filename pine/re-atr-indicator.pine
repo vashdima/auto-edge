@@ -1,0 +1,60 @@
+//@version=5
+indicator("Range Expansion (ATR)", shorttitle="RE ATR", overlay=false)
+
+//==================== Inputs ====================
+groupCore = "Core"
+groupQuality = "Quality Filters"
+groupDisplay = "Display"
+groupAlerts = "Alerts"
+
+atrLen = input.int(14, "ATR Length", minval=1, group=groupCore)
+reThreshold = input.float(1.4, "RE Threshold", minval=0.1, step=0.05, group=groupCore)
+
+useCloseLocationFilter = input.bool(false, "Use Close Location Filter", group=groupQuality)
+minCloseLocation = input.float(0.6, "Min Close Location (0-1)", minval=0.0, maxval=1.0, step=0.05, group=groupQuality)
+useBodyRatioFilter = input.bool(false, "Use Body Ratio Filter", group=groupQuality)
+minBodyRatio = input.float(0.5, "Min Body Ratio (0-1)", minval=0.0, maxval=1.0, step=0.05, group=groupQuality)
+
+showMarkers = input.bool(true, "Show RE Markers", group=groupDisplay)
+showBg = input.bool(false, "Show RE Background", group=groupDisplay)
+bgColor = input.color(color.new(color.green, 88), "Background Color", group=groupDisplay)
+
+enableReOnAlert = input.bool(true, "Enable RE On Alert", group=groupAlerts)
+enableReOffAlert = input.bool(true, "Enable RE Off Alert", group=groupAlerts)
+enableBurstAlert = input.bool(true, "Enable RE Burst Alert", group=groupAlerts)
+
+//==================== Core Metric ====================
+barRange = high - low
+atrValue = ta.atr(atrLen)
+reRatio = atrValue > 0 ? (barRange / atrValue) : na
+
+//==================== Optional Quality Filters ====================
+closeLocation = barRange > 0 ? ((close - low) / barRange) : 0.5
+bodyRatio = barRange > 0 ? (math.abs(close - open) / barRange) : 0.0
+
+closeLocationPass = not useCloseLocationFilter or (closeLocation >= minCloseLocation)
+bodyRatioPass = not useBodyRatioFilter or (bodyRatio >= minBodyRatio)
+
+reBaseActive = reRatio >= reThreshold
+reActive = reBaseActive and closeLocationPass and bodyRatioPass
+reBurst = ta.crossover(reRatio, reThreshold) and closeLocationPass and bodyRatioPass
+bullishReActive = reActive and close > open
+bearishReActive = reActive and close < open
+
+//==================== Visuals ====================
+plot(reRatio, title="RE Ratio (Range / ATR)", color=color.new(color.teal, 0), linewidth=2)
+plot(reThreshold, title="RE Threshold", color=color.new(color.orange, 0), linewidth=2, style=plot.style_line)
+plot(closeLocation, title="Close Location (0-1)", color=color.new(color.blue, 40), linewidth=1, display=display.none)
+plot(bodyRatio, title="Body Ratio (0-1)", color=color.new(color.purple, 40), linewidth=1, display=display.none)
+
+plotchar(showMarkers and bullishReActive, title="Bullish RE Marker", char="▲", location=location.top, color=color.green, size=size.tiny)
+plotchar(showMarkers and bearishReActive, title="Bearish RE Marker", char="▼", location=location.top, color=color.red, size=size.tiny)
+bgcolor(showBg and reActive ? bgColor : na, title="RE Active Background")
+
+//==================== Alerts ====================
+reTurnedOn = reActive and not reActive[1]
+reTurnedOff = not reActive and reActive[1]
+
+alertcondition(enableReOnAlert and reTurnedOn, title="RE On", message="Range Expansion turned ON.")
+alertcondition(enableReOffAlert and reTurnedOff, title="RE Off", message="Range Expansion turned OFF.")
+alertcondition(enableBurstAlert and reBurst, title="RE Burst", message="Range Expansion ratio crossed above threshold.")

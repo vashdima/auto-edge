@@ -1,0 +1,210 @@
+//@version=5
+indicator("Structure Mod", overlay = true, max_bars_back = 500, max_labels_count = 500)
+
+//──────────────────────
+// Inputs
+//──────────────────────
+highlight_first_bull = input(true,  "Highlight 1st Bull MB")
+highlight_first_bear = input(true,  "Highlight 1st Bear MB")
+show_mb_breaks       = input(false, "Show MB breaks")
+show_mb_count        = input(true,  "Show MB count labels")
+show_htf             = input(false, "Show higher timeframe MBs")
+htf                  = input.string("60", "Higher timeframe in minutes")
+
+//──────────────────────
+// Pullback detection
+//──────────────────────
+bullPullback = close > high[1] or open > high[1]
+bearPullback = close < low[1] or open < low[1]
+
+var float highestSinceBullPullback = na
+var float lowestSinceBearPullback  = na
+var int   highestSinceBullPullbackIndex = na
+var int   lowestSinceBearPullbackIndex  = na
+
+bullishPBBackBars       = ta.barssince(bullPullback) + 1
+bullishPBBackBarsNormal = ta.barssince(bullPullback)
+bearishPBBackBarsNormal = ta.barssince(bearPullback)
+bearishPBBackBars       = ta.barssince(bearPullback) + 1
+
+if bullishPBBackBars > 0
+    highestSinceBullPullback := ta.highest(high, bullishPBBackBars)
+
+if bearishPBBackBars > 0
+    lowestSinceBearPullback := ta.lowest(low, bearishPBBackBars)
+    for i = 0 to bearishPBBackBarsNormal
+        if low[i] == lowestSinceBearPullback
+            lowestSinceBearPullbackIndex := bar_index - i
+
+//──────────────────────
+// Pullback high/low (MB structure levels)
+//──────────────────────
+var float pbHigh = na
+var float pbLow  = na
+
+recentBreakUp   = ta.barssince(close > pbHigh) < 5
+recentBull      = (pbHigh[1] > pbHigh[2] or pbHigh[2] > pbHigh[3]) and high[1] == pbHigh[1]
+recentBreakDown = ta.barssince(close < pbLow) < 5
+recentBear      = (pbLow[1] < pbLow[2] or pbLow[2] < pbLow[3]) and low[1] == pbLow[1]
+
+if na(pbHigh) and bullPullback
+    pbHigh := high
+else if close < pbLow[1] or open < pbLow[1]
+    pbHigh := highestSinceBullPullback
+else if close > pbHigh[1] or open > pbHigh[1]
+    pbHigh := high
+else if high > pbHigh[1] and recentBreakUp and recentBull and open[1] != close[1]
+    pbHigh := high
+
+if na(pbLow) and bearPullback
+    pbLow := low
+else if close > pbHigh[1] or open > pbHigh[1]
+    pbLow := lowestSinceBearPullback
+else if close < pbLow[1] or open < pbLow[1]
+    pbLow := low
+else if low < pbLow[1] and recentBreakDown and recentBear and open[1] != close[1]
+    pbLow := low
+
+//──────────────────────
+// MB detection & sequencing
+//──────────────────────
+var bool bearishMB = false
+var bool bullishMB = false
+
+var int bullishMBlast       = na
+var int bullishMBsecondlast = na
+var int bearishMBlast       = na
+var int bearishMBsecondlast = na
+
+var int   UpMBLeftIndex   = na
+var float UpMBLeftPrice   = na
+var int   DownMBLeftIndex = na
+var float DownMBLeftPrice = na
+
+bearishMB := (pbLow != pbLow[1]) and (close < pbLow[1] or open < pbLow[1]) and (bearishMB[1] == false and bearishMB[2] == false and bearishMB[3] == false) and (pbHigh != pbHigh[1] or bullishMBlast > bearishMBlast)
+bullishMB := (pbHigh != pbHigh[1]) and (close > pbHigh[1] or open > pbHigh[1]) and (bullishMB[1] == false and bullishMB[2] == false and bullishMB[3] == false) and (pbLow != pbLow[1] or bearishMBlast > bullishMBlast)
+
+bullishMBlast       := ta.valuewhen(bullishMB, bar_index, 0)
+bullishMBsecondlast := ta.valuewhen(bullishMB, bar_index, 1)
+bearishMBlast       := ta.valuewhen(bearishMB, bar_index, 0)
+bearishMBsecondlast := ta.valuewhen(bearishMB, bar_index, 1)
+
+var bool bullishFirstMB = false
+var bool bearishFirstMB = false
+
+int   UpPbLeftIndexOut   = na
+float UpPbLeftPriceOut   = na
+int   DownPbLeftIndexOut = na
+float DownPbLeftPriceOut = na
+
+bullishFirstMB := bullishMBlast > bearishMBlast and bullishMBsecondlast < bearishMBlast
+bearishFirstMB := bearishMBlast > bullishMBlast and bearishMBsecondlast < bullishMBlast and bearishMB
+
+if bearishMB
+    for i = 0 to bullishPBBackBarsNormal
+        if high[i] == highestSinceBullPullback
+            highestSinceBullPullbackIndex := bar_index - i
+
+if bullishMB
+    for i = 0 to bearishPBBackBarsNormal
+        if low[i] == lowestSinceBearPullback
+            lowestSinceBearPullbackIndex := bar_index - i
+
+UpPbLeftIndexOut := ta.valuewhen(bearishMB, highestSinceBullPullbackIndex, 0)
+UpPbLeftPriceOut := ta.valuewhen(bearishMB, pbHigh, 0)
+if bullishMB
+    UpMBLeftIndex := UpPbLeftIndexOut
+    UpMBLeftPrice := UpPbLeftPriceOut
+
+DownPbLeftIndexOut := ta.valuewhen(bullishMB, lowestSinceBearPullbackIndex, 0)
+DownPbLeftPriceOut := ta.valuewhen(bullishMB, pbLow, 0)
+if bearishMB
+    DownMBLeftIndex := DownPbLeftIndexOut
+    DownMBLeftPrice := DownPbLeftPriceOut
+
+//──────────────────────
+// MB Counters
+//──────────────────────
+var int bullishMBCount = 0
+var int bearishMBCount = 0
+
+if bullishFirstMB and bullishMB
+    bullishMBCount := 1
+    bearishMBCount := 0
+else if bullishMB
+    bullishMBCount += 1
+
+if bearishFirstMB and bearishMB
+    bearishMBCount := 1
+    bullishMBCount := 0
+else if bearishMB
+    bearishMBCount += 1
+
+// MB Count Labels
+if bullishMB and show_mb_count
+    label.new(bar_index, pbLow[1], str.tostring(bullishMBCount),
+              style     = label.style_label_up,
+              color     = color.new(color.green, 30),
+              textcolor = color.white,
+              size      = size.small)
+
+if bearishMB and show_mb_count
+    label.new(bar_index, pbHigh[1], str.tostring(bearishMBCount),
+              style     = label.style_label_down,
+              color     = color.new(color.red, 30),
+              textcolor = color.white,
+              size      = size.small)
+
+//──────────────────────
+// Plots
+//──────────────────────
+plotshape(show_mb_breaks and bullishMB ? pbLow  : na, style = shape.circle, location = location.absolute, color = color.new(color.green, 40), size = size.tiny)
+plotshape(show_mb_breaks and bearishMB ? pbHigh : na, style = shape.circle, location = location.absolute, color = color.new(color.red,   40), size = size.tiny)
+
+plot(pbHigh, title = "MB high", style = plot.style_stepline, color = color.rgb(169, 169, 169))
+plot(pbLow,  title = "MB low",  style = plot.style_stepline, color = color.rgb(169, 169, 169))
+
+plot(show_htf ? request.security(syminfo.tickerid, htf, pbHigh) : na, title = "HTF MB high", style = plot.style_stepline, color = color.rgb(128, 128, 128), linewidth = 3)
+plot(show_htf ? request.security(syminfo.tickerid, htf, pbLow)  : na, title = "HTF MB low",  style = plot.style_stepline, color = color.rgb(128, 128, 128), linewidth = 3)
+
+//──────────────────────
+// MB zones (boxes)
+//──────────────────────
+var box bullishFirstMBBox = na
+if bullishMB and bullishFirstMB and highlight_first_bull and high > UpMBLeftPrice and UpMBLeftIndex > 0 and bar_index > UpMBLeftIndex
+    bullishFirstMBBox := box.new(UpMBLeftIndex, UpMBLeftPrice, bar_index - 1, pbLow[1], border_color = na, bgcolor = color.new(color.green, 70))
+
+var box bearishFirstMBBox = na
+if bearishMB and bearishFirstMB and highlight_first_bear and low < DownMBLeftPrice and DownMBLeftIndex > 0 and bar_index > DownMBLeftIndex
+    bearishFirstMBBox := box.new(DownMBLeftIndex, DownMBLeftPrice, bar_index - 1, pbHigh[1], border_color = na, bgcolor = color.new(#bd86ca, 81))
+
+//──────────────────────
+// HTF First MB Zones
+//──────────────────────
+htfBullishMB       = request.security(syminfo.tickerid, htf, bullishMB)
+htfBearishMB       = request.security(syminfo.tickerid, htf, bearishMB)
+htfBullishFirstMB  = request.security(syminfo.tickerid, htf, bullishFirstMB and bullishMB)
+htfBearishFirstMB  = request.security(syminfo.tickerid, htf, bearishFirstMB and bearishMB)
+htfUpMBLeftPrice   = request.security(syminfo.tickerid, htf, UpMBLeftPrice)
+htfDownMBLeftPrice = request.security(syminfo.tickerid, htf, DownMBLeftPrice)
+htfPbLow           = request.security(syminfo.tickerid, htf, pbLow[1])
+htfPbHigh          = request.security(syminfo.tickerid, htf, pbHigh[1])
+
+var box htfBullishFirstMBBox = na
+if show_htf and htfBullishFirstMB and high > htfUpMBLeftPrice
+    htfBullishFirstMBBox := box.new(bar_index - 1, htfUpMBLeftPrice, bar_index, htfPbLow,
+                                     border_color = color.green, bgcolor = color.new(color.green, 50))
+
+var box htfBearishFirstMBBox = na
+if show_htf and htfBearishFirstMB and low < htfDownMBLeftPrice
+    htfBearishFirstMBBox := box.new(bar_index - 1, htfDownMBLeftPrice, bar_index, htfPbHigh,
+                                     border_color = #bd86ca, bgcolor = color.new(#bd86ca, 50))
+
+//──────────────────────
+// Alerts
+//──────────────────────
+alertcondition(bullishFirstMB and bullishMB, title = "1st MB Up",    message = "1st MB Up")
+alertcondition(bearishFirstMB and bearishMB, title = "1st MB Down",  message = "1st MB Down")
+alertcondition(bullishMB,                    title = "MB Up",        message = "MB Up")
+alertcondition(bearishMB,                    title = "MB Down",      message = "MB Down")
+alertcondition(bearishMB or bullishMB,       title = "Any MB break", message = "MB break")

@@ -1,0 +1,705 @@
+//@version=5
+indicator("Entry & Trade Management", overlay=true, max_lines_count=500, max_labels_count=500)
+
+//==================== Inputs ====================
+// Entry Detection
+ema20Period = input.int(20, "EMA 20 Period", minval=1)
+ema50Period = input.int(50, "EMA 50 Period", minval=1)
+ema100Period = input.int(100, "EMA 100 Period", minval=1)
+maxCandlesAfterBreak = input.int(5, "Max Candles After Break for Pause", minval=1, maxval=20)
+maxDistanceFromEMA = input.float(2.0, "Max Distance from 20 EMA (ATR)", minval=0.1, step=0.1, tooltip="Maximum distance from 20 EMA in ATR multiples when pause is detected")
+
+// Context & Validation
+htfTrendTF = input.timeframe("W", "Trend timeframe (Context)", group="Context & Validation")
+showHighlight = input.bool(true, "Show trend highlight", group="Context & Validation")
+highlightColor = input.color(color.new(color.green, 90), "Trend highlight color", group="Context & Validation")
+validationTF = input.timeframe("D", "Validation timeframe", group="Context & Validation")
+showValidation = input.bool(true, "Show validation signal", group="Context & Validation")
+validationColor = input.color(color.green, "Validation line color", group="Context & Validation")
+
+// Risk Management
+atrPeriod = input.int(14, "ATR Period", minval=1)
+atrMultiplier = input.float(1.5, "ATR Multiplier for SL", minval=0.1, step=0.1)
+rrBreakEven = input.float(1.0, "Break Even at (R:R)", minval=0.1, step=0.1)
+rrTakeProfit = input.float(4.0, "Take Profit at (R:R)", minval=0.1, step=0.1)
+
+// Manual Controls
+manualEntryEnabled = input.bool(false, "Manual Entry Mode (Toggle to enter trade)")
+manualExitEnabled = input.bool(false, "Manual Exit (Toggle to exit trade)")
+manualCancelEnabled = input.bool(false, "Manual Cancel (Toggle to cancel pending trade)")
+
+// Alerts
+enableAlerts = input.bool(true, "Enable Alerts")
+
+//==================== Calculations ====================
+// EMAs
+ema20 = ta.ema(close, ema20Period)
+ema50 = ta.ema(close, ema50Period)
+ema100 = ta.ema(close, ema100Period)
+
+// ATR for stop loss calculation
+atr = ta.atr(atrPeriod)
+
+// EMA slopes (compare current to previous)
+ema20SlopingUp = ema20 > ema20[1]
+ema50SlopingUp = ema50 > ema50[1]
+ema100SlopingUp = ema100 > ema100[1]
+allEmasUp = ema20SlopingUp and ema50SlopingUp and ema100SlopingUp
+
+// Price action patterns
+priceAboveEma20 = close > ema20
+priceBelowEma20 = close < ema20
+
+// Track breakout above 20 EMA
+var int breakoutBarIndex = na  // Bar index when breakout occurred
+var float highestHighInPause = na  // Track highest high during pause sequence
+var int highestHighBarIndex = na  // Bar index where highest high occurred
+var int highestHighTime = na  // Timestamp where highest high occurred
+
+// Detect breakout: price breaks above 20 EMA
+breakoutAboveEma = close[1] <= ema20[1] and close > ema20
+
+// Check if we're within valid window after breakout (needed for tracking logic)
+barsSinceBreakout = not na(breakoutBarIndex) ? (bar_index - breakoutBarIndex) : na
+withinBreakoutWindow = not na(barsSinceBreakout) and barsSinceBreakout <= maxCandlesAfterBreak
+
+// Update breakout tracking
+if breakoutAboveEma
+    breakoutBarIndex := bar_index
+    highestHighInPause := high  // Start tracking highest high from breakout bar
+    highestHighBarIndex := bar_index  // Track bar index of highest high
+    highestHighTime := time  // Track timestamp of highest high
+else if priceBelowEma20
+    // Reset if price goes back below 20 EMA
+    breakoutBarIndex := na
+    highestHighInPause := na
+    highestHighBarIndex := na
+    highestHighTime := na
+else if not na(breakoutBarIndex) and withinBreakoutWindow
+    // Track highest high during the pause window
+    if na(highestHighInPause) or high > highestHighInPause
+        highestHighInPause := high
+        highestHighBarIndex := bar_index  // Update bar index when new highest high is found
+        highestHighTime := time  // Update timestamp when new highest high is found
+
+// Pause pattern: Current high lower than previous high
+pausePattern = high < high[1]
+
+// Check if price is not too far from 20 EMA when pause is detected (ATR-based)
+distanceFromEMA = close - ema20
+distanceInATR = atr != 0 ? (distanceFromEMA / atr) : na
+priceNotTooFarFromEMA = na(distanceInATR) ? false : distanceInATR <= maxDistanceFromEMA
+
+// Context (HTF trend)
+htfEMA20  = request.security(syminfo.tickerid, htfTrendTF, ta.ema(close, 20), lookahead=barmerge.lookahead_off)
+htfEMA100 = request.security(syminfo.tickerid, htfTrendTF, ta.ema(close, 100), lookahead=barmerge.lookahead_off)
+htfClose  = request.security(syminfo.tickerid, htfTrendTF, close, lookahead=barmerge.lookahead_off)
+htfTrendBullish = htfEMA20 > htfEMA100 and htfClose > htfEMA20
+
+// Validation (validation TF)
+valEMA20 = request.security(syminfo.tickerid, validationTF, ta.ema(close, 20), lookahead=barmerge.lookahead_off)
+valEMA20_prev = request.security(syminfo.tickerid, validationTF, ta.ema(close, 20)[1], lookahead=barmerge.lookahead_off)
+valOpen = request.security(syminfo.tickerid, validationTF, open, lookahead=barmerge.lookahead_off)
+valHigh = request.security(syminfo.tickerid, validationTF, high, lookahead=barmerge.lookahead_off)
+valLow = request.security(syminfo.tickerid, validationTF, low, lookahead=barmerge.lookahead_off)
+valClose = request.security(syminfo.tickerid, validationTF, close, lookahead=barmerge.lookahead_off)
+var bool valIsLocked = false
+valFullCandleBelow = valHigh < valEMA20
+if valFullCandleBelow
+    valIsLocked := true
+valFullCandleAbove = valLow > valEMA20
+if valFullCandleAbove
+    valIsLocked := false
+valEMA20SlopingUp = valEMA20 > valEMA20_prev
+valPriceAboveEMA = valOpen > valEMA20 or valClose > valEMA20 or valHigh > valEMA20 or valLow > valEMA20
+validationSignal = not valIsLocked and valEMA20SlopingUp and valPriceAboveEMA
+
+//==================== Entry Setup Detection ====================
+// Entry setup: breakout + pause + EMAs aligned + distance filter + context and validation both bullish
+entrySetupDetected = not na(breakoutBarIndex) and withinBreakoutWindow and pausePattern and allEmasUp and priceNotTooFarFromEMA and htfTrendBullish and validationSignal
+
+//==================== State Machine ====================
+// Trade states
+var string STATE_NO_TRADE = "NO_TRADE"
+var string STATE_PENDING = "PENDING"
+var string STATE_IN_TRADE = "IN_TRADE"
+var string STATE_COMPLETED = "COMPLETED"
+
+var string tradeState = STATE_NO_TRADE
+
+// Trade levels
+var float entryPrice = na
+var float stopLossPrice = na
+var float breakEvenPrice = na
+var float takeProfitPrice = na
+var int setupBar = na
+var int entryBarIndex = na
+var bool breakEvenTriggered = false
+var bool wasInProfitAfterBE = false  // Track if price was in profit after BE was triggered
+var string exitReason = na  // Track how trade exited: "SL", "BE", "TP", "MANUAL"
+var int entryTime = na  // Timestamp when trade was entered
+var int setupTime = na  // Timestamp when entry line was created (setup detected)
+var int completedBarIndex = na  // Bar index when trade was completed
+
+// Line objects
+var line entryLine = na
+var line slLine = na
+var line beLine = na
+var line tpLine = na
+
+// Labels
+var label entryLabel = na
+var label slLabel = na
+var label beLabel = na
+var label tpLabel = na
+
+//==================== Helper Functions ====================
+// No functions needed - will inline all operations to avoid global variable modification issues
+
+//==================== State Machine Logic ====================
+
+// NO_TRADE state: Looking for entry setup
+if tradeState == STATE_NO_TRADE
+    if entrySetupDetected
+        // Calculate entry levels
+        // Entry at the highest high within the pause sequence
+        entryPrice := not na(highestHighInPause) ? highestHighInPause : high[1]  // Use tracked highest high, fallback to previous high
+        riskDistance = atr * atrMultiplier
+        stopLossPrice := entryPrice - riskDistance
+        breakEvenPrice := entryPrice
+        takeProfitPrice := entryPrice + (riskDistance * rrTakeProfit)
+        setupBar := bar_index
+        breakEvenTriggered := false
+        wasInProfitAfterBE := false
+        // Use the bar index where highest high occurred, or current bar - 1 as fallback
+        entryBarIndex := not na(highestHighBarIndex) ? highestHighBarIndex : bar_index - 1
+        setupTime := not na(highestHighTime) ? highestHighTime : time[1]  // Record timestamp of the bar where highest high occurred
+        
+        // Reset breakout tracking so we can detect next setup
+        breakoutBarIndex := na
+        highestHighInPause := na
+        highestHighBarIndex := na
+        highestHighTime := na
+        
+        // Delete old lines first
+        if not na(entryLine)
+            line.delete(entryLine)
+        if not na(slLine)
+            line.delete(slLine)
+        if not na(beLine)
+            line.delete(beLine)
+        if not na(tpLine)
+            line.delete(tpLine)
+        if not na(entryLabel)
+            label.delete(entryLabel)
+        if not na(slLabel)
+            label.delete(slLabel)
+        if not na(beLabel)
+            label.delete(beLabel)
+        if not na(tpLabel)
+            label.delete(tpLabel)
+        
+        // entryBarIndex already set above based on highest high bar
+        
+        // Entry line (blue) - ensure both y coordinates are exactly the same price
+        entryLine := line.new(entryBarIndex, entryPrice, entryBarIndex + 1, entryPrice, 
+             extend=extend.none, color=color.blue, width=2, style=line.style_solid)
+        // Ensure line stays at exact price level
+        line.set_xy1(entryLine, entryBarIndex, entryPrice)
+        line.set_xy2(entryLine, entryBarIndex + 1, entryPrice)
+        entryLabel := label.new(bar_index, entryPrice, "ENTRY: " + str.tostring(entryPrice, format.mintick), 
+             style=label.style_label_left, color=color.blue, textcolor=color.white, size=size.small)
+        
+        // Stop Loss line (red) - ensure both y coordinates are exactly the same price
+        slLine := line.new(entryBarIndex, stopLossPrice, entryBarIndex + 1, stopLossPrice, 
+             extend=extend.none, color=color.red, width=2, style=line.style_solid)
+        // Ensure line stays at exact price level
+        line.set_xy1(slLine, entryBarIndex, stopLossPrice)
+        line.set_xy2(slLine, entryBarIndex + 1, stopLossPrice)
+        slLabel := label.new(bar_index, stopLossPrice, "SL: " + str.tostring(stopLossPrice, format.mintick), 
+             style=label.style_label_left, color=color.red, textcolor=color.white, size=size.small)
+        
+        // BE line will be created by converting entry line when BE is activated
+        beLine := na
+        beLabel := na
+        
+        // Take Profit line (green) - ensure both y coordinates are exactly the same price
+        tpLine := line.new(entryBarIndex, takeProfitPrice, entryBarIndex + 1, takeProfitPrice, 
+             extend=extend.none, color=color.green, width=2, style=line.style_solid)
+        // Ensure line stays at exact price level
+        line.set_xy1(tpLine, entryBarIndex, takeProfitPrice)
+        line.set_xy2(tpLine, entryBarIndex + 1, takeProfitPrice)
+        tpLabel := label.new(bar_index, takeProfitPrice, "TP: " + str.tostring(takeProfitPrice, format.mintick), 
+             style=label.style_label_left, color=color.green, textcolor=color.white, size=size.small)
+        
+        // Move to PENDING state
+        tradeState := STATE_PENDING
+        
+        // Alert
+        if enableAlerts
+            alert("Entry Setup Detected! Entry: " + str.tostring(entryPrice, format.mintick) + 
+                  " | SL: " + str.tostring(stopLossPrice, format.mintick), alert.freq_once_per_bar)
+
+// PENDING state: Waiting for manual entry or auto-cancel
+else if tradeState == STATE_PENDING
+    // Update line y-coordinates on each bar to keep them anchored to price scale
+    // Extend lines 30 bars from current bar
+    maxExtensionBar = bar_index + 30
+    if not na(entryLine)
+        line.set_xy1(entryLine, entryBarIndex, entryPrice)
+        line.set_xy2(entryLine, maxExtensionBar, entryPrice)
+    if not na(slLine)
+        line.set_xy1(slLine, entryBarIndex, stopLossPrice)
+        line.set_xy2(slLine, maxExtensionBar, stopLossPrice)
+    if not na(beLine)
+        line.set_xy1(beLine, entryBarIndex, breakEvenPrice)
+        line.set_xy2(beLine, maxExtensionBar, breakEvenPrice)
+    if not na(tpLine)
+        line.set_xy1(tpLine, entryBarIndex, takeProfitPrice)
+        line.set_xy2(tpLine, maxExtensionBar, takeProfitPrice)
+    
+    // Move labels to the rightmost edge
+    if not na(entryLabel)
+        label.set_x(entryLabel, bar_index)
+        label.set_style(entryLabel, label.style_label_left)
+    if not na(slLabel)
+        label.set_x(slLabel, bar_index)
+        label.set_style(slLabel, label.style_label_left)
+    if not na(beLabel)
+        label.set_x(beLabel, bar_index)
+        label.set_style(beLabel, label.style_label_left)
+    if not na(tpLabel)
+        label.set_x(tpLabel, bar_index)
+        label.set_style(tpLabel, label.style_label_left)
+    
+    // Manual cancel trigger (check first, before auto-cancel)
+    if manualCancelEnabled
+        // Delete all lines
+        if not na(entryLine)
+            line.delete(entryLine)
+            entryLine := na
+        if not na(slLine)
+            line.delete(slLine)
+            slLine := na
+        if not na(beLine)
+            line.delete(beLine)
+            beLine := na
+        if not na(tpLine)
+            line.delete(tpLine)
+            tpLine := na
+        if not na(entryLabel)
+            label.delete(entryLabel)
+            entryLabel := na
+        if not na(slLabel)
+            label.delete(slLabel)
+            slLabel := na
+        if not na(beLabel)
+            label.delete(beLabel)
+            beLabel := na
+        if not na(tpLabel)
+            label.delete(tpLabel)
+            tpLabel := na
+        
+        tradeState := STATE_NO_TRADE
+        entryPrice := na
+        stopLossPrice := na
+        breakEvenPrice := na
+        takeProfitPrice := na
+        entryBarIndex := na
+        
+        // Alert
+        if enableAlerts
+            alert("Entry Setup CANCELLED manually", alert.freq_once_per_bar)
+    
+    // Auto-cancel condition: Price closes below 20 EMA
+    else if close < ema20
+        // Delete all lines
+        if not na(entryLine)
+            line.delete(entryLine)
+            entryLine := na
+        if not na(slLine)
+            line.delete(slLine)
+            slLine := na
+        if not na(beLine)
+            line.delete(beLine)
+            beLine := na
+        if not na(tpLine)
+            line.delete(tpLine)
+            tpLine := na
+        if not na(entryLabel)
+            label.delete(entryLabel)
+            entryLabel := na
+        if not na(slLabel)
+            label.delete(slLabel)
+            slLabel := na
+        if not na(beLabel)
+            label.delete(beLabel)
+            beLabel := na
+        if not na(tpLabel)
+            label.delete(tpLabel)
+            tpLabel := na
+        
+        tradeState := STATE_NO_TRADE
+        entryPrice := na
+        stopLossPrice := na
+        breakEvenPrice := na
+        takeProfitPrice := na
+        entryBarIndex := na
+        
+        // Alert
+        if enableAlerts
+            alert("Entry Setup CANCELLED - Price closed below 20 EMA", alert.freq_once_per_bar)
+    
+    // Auto entry trigger: Price crosses entry line (buy stop order)
+    if high >= entryPrice
+        tradeState := STATE_IN_TRADE
+        entryTime := time  // Record entry timestamp
+        
+        // Alert
+        if enableAlerts
+            alert("Trade ENTERED - Price crossed entry line at: " + str.tostring(entryPrice, format.mintick), alert.freq_once_per_bar)
+
+// IN_TRADE state: Managing active position
+else if tradeState == STATE_IN_TRADE
+    // Update line y-coordinates on each bar to keep them anchored to price scale
+    // Extend lines 30 bars from current bar
+    maxExtensionBar = bar_index + 30
+    if not na(entryLine)
+        line.set_xy1(entryLine, entryBarIndex, entryPrice)
+        line.set_xy2(entryLine, maxExtensionBar, entryPrice)
+    if not na(slLine)
+        // Always keep original SL price, just change style to dotted when BE triggered
+        line.set_xy1(slLine, entryBarIndex, stopLossPrice)
+        line.set_xy2(slLine, maxExtensionBar, stopLossPrice)
+        if breakEvenTriggered
+            line.set_style(slLine, line.style_dotted)
+    if not na(beLine)
+        // BE line is the converted entry line, so use entryPrice (same as breakEvenPrice)
+        line.set_xy1(beLine, entryBarIndex, entryPrice)
+        line.set_xy2(beLine, maxExtensionBar, entryPrice)
+    if not na(tpLine)
+        line.set_xy1(tpLine, entryBarIndex, takeProfitPrice)
+        line.set_xy2(tpLine, maxExtensionBar, takeProfitPrice)
+    
+    // Move labels to the rightmost edge on every bar
+    if not na(entryLabel)
+        label.set_x(entryLabel, bar_index)
+        label.set_style(entryLabel, label.style_label_left)
+    if not na(slLabel)
+        label.set_x(slLabel, bar_index)
+        label.set_style(slLabel, label.style_label_left)
+    if not na(beLabel)
+        // BE label is the converted entry label
+        label.set_x(beLabel, bar_index)
+        label.set_style(beLabel, label.style_label_left)
+    if not na(tpLabel)
+        label.set_x(tpLabel, bar_index)
+        label.set_style(tpLabel, label.style_label_left)
+    
+    // Check for Break Even trigger
+    beWasJustTriggered = false
+    if not breakEvenTriggered
+        beDistance = entryPrice - stopLossPrice
+        beTarget = entryPrice + (beDistance * rrBreakEven)
+        
+        if high >= beTarget
+            breakEvenTriggered := true
+            beWasJustTriggered := true  // Mark that BE was just triggered on this bar
+            wasInProfitAfterBE := false  // Reset profit tracking when BE is triggered
+            
+            // Make SL line dotted when BE is activated (keep original SL price)
+            if not na(slLine)
+                line.set_style(slLine, line.style_dotted)
+            
+            // Convert entry line to BE line (they're at the same price)
+            if not na(entryLine)
+                line.set_color(entryLine, color.orange)
+                line.set_style(entryLine, line.style_solid)
+                beLine := entryLine  // Reuse entry line as BE line
+                entryLine := na  // Clear entry line reference
+            if not na(entryLabel)
+                label.set_color(entryLabel, color.orange)
+                label.set_textcolor(entryLabel, color.black)
+                label.set_text(entryLabel, "BE: " + str.tostring(breakEvenPrice, format.mintick))
+                beLabel := entryLabel  // Reuse entry label as BE label
+                entryLabel := na  // Clear entry label reference
+            
+            // Alert
+            if enableAlerts
+                alert("Break Even TRIGGERED - SL moved to entry", alert.freq_once_per_bar)
+    
+    // Track if price was in profit after BE was triggered (but not on the same bar BE was triggered)
+    if breakEvenTriggered and not beWasJustTriggered and high > entryPrice
+        wasInProfitAfterBE := true
+    
+    // Check for Take Profit hit
+    if high >= takeProfitPrice
+        tradeState := STATE_COMPLETED
+        exitReason := "TP"
+        completedBarIndex := bar_index
+        
+        // Make TP line dotted when TP is hit
+        if not na(tpLine)
+            line.set_style(tpLine, line.style_dotted)
+        
+        // Alert
+        if enableAlerts
+            alert("Take Profit HIT at: " + str.tostring(takeProfitPrice, format.mintick), alert.freq_once_per_bar)
+    
+    // Check for Stop Loss hit
+    else if low <= stopLossPrice and not breakEvenTriggered
+        tradeState := STATE_COMPLETED
+        exitReason := "SL"
+        completedBarIndex := bar_index
+        
+        // Make SL line dotted when SL is hit
+        if not na(slLine)
+            line.set_style(slLine, line.style_dotted)
+        
+        // Alert
+        if enableAlerts
+            alert("Stop Loss HIT at: " + str.tostring(stopLossPrice, format.mintick), alert.freq_once_per_bar)
+    
+    else if low <= breakEvenPrice and breakEvenTriggered and wasInProfitAfterBE and not beWasJustTriggered
+        // Only complete at BE if:
+        // 1. Price was in profit after BE was triggered (on a previous bar)
+        // 2. Price came back down to entry
+        // 3. BE was not just triggered on this same bar
+        tradeState := STATE_COMPLETED
+        exitReason := "BE"
+        completedBarIndex := bar_index
+        
+        // Make BE line dotted when trade completes at BE
+        if not na(beLine)
+            line.set_style(beLine, line.style_dotted)
+        
+        // Alert
+        if enableAlerts
+            alert("Stopped out at Break Even: " + str.tostring(breakEvenPrice, format.mintick), alert.freq_once_per_bar)
+    
+    // Manual exit trigger
+    else if manualExitEnabled
+        tradeState := STATE_COMPLETED
+        exitReason := "MANUAL"
+        completedBarIndex := bar_index
+        
+        // Alert
+        if enableAlerts
+            alert("Trade EXITED manually", alert.freq_once_per_bar)
+
+// COMPLETED state: Trade finished, keep lines visible for 3 bars, then reset to NO_TRADE
+else if tradeState == STATE_COMPLETED
+    // Keep lines visible for 3 bars after completion
+    barsSinceCompletion = bar_index - completedBarIndex
+    
+    if barsSinceCompletion <= 3
+        // Update line positions to extend 30 bars from current bar
+        maxExtensionBar = bar_index + 30
+        if not na(entryLine) and not na(entryBarIndex)
+            line.set_xy1(entryLine, entryBarIndex, entryPrice)
+            line.set_xy2(entryLine, maxExtensionBar, entryPrice)
+        if not na(slLine) and not na(entryBarIndex)
+            line.set_xy1(slLine, entryBarIndex, stopLossPrice)
+            line.set_xy2(slLine, maxExtensionBar, stopLossPrice)
+            // Keep SL line dotted when SL is hit
+            if exitReason == "SL"
+                line.set_style(slLine, line.style_dotted)
+        if not na(beLine) and not na(entryBarIndex)
+            // BE line is the converted entry line, so use entryPrice (same as breakEvenPrice)
+            line.set_xy1(beLine, entryBarIndex, entryPrice)
+            line.set_xy2(beLine, maxExtensionBar, entryPrice)
+            // Make BE line dotted when trade completes at BE
+            if exitReason == "BE"
+                line.set_style(beLine, line.style_dotted)
+        if not na(tpLine) and not na(entryBarIndex)
+            line.set_xy1(tpLine, entryBarIndex, takeProfitPrice)
+            line.set_xy2(tpLine, maxExtensionBar, takeProfitPrice)
+        
+        // Move labels to the rightmost edge
+        if not na(entryLabel)
+            label.set_x(entryLabel, bar_index)
+        if not na(slLabel)
+            label.set_x(slLabel, bar_index)
+        if not na(beLabel)
+            label.set_x(beLabel, bar_index)
+        if not na(tpLabel)
+            label.set_x(tpLabel, bar_index)
+    else
+        // After 3 bars, delete all lines and reset
+        if not na(entryLine)
+            line.delete(entryLine)
+            entryLine := na
+        if not na(slLine)
+            line.delete(slLine)
+            slLine := na
+        if not na(beLine)
+            line.delete(beLine)
+            beLine := na
+        if not na(tpLine)
+            line.delete(tpLine)
+            tpLine := na
+        if not na(entryLabel)
+            label.delete(entryLabel)
+            entryLabel := na
+        if not na(slLabel)
+            label.delete(slLabel)
+            slLabel := na
+        if not na(beLabel)
+            label.delete(beLabel)
+            beLabel := na
+        if not na(tpLabel)
+            label.delete(tpLabel)
+            tpLabel := na
+        
+        tradeState := STATE_NO_TRADE
+        entryPrice := na
+        stopLossPrice := na
+        breakEvenPrice := na
+        takeProfitPrice := na
+        breakEvenTriggered := false
+        wasInProfitAfterBE := false
+        exitReason := na
+        entryTime := na
+        setupTime := na
+        completedBarIndex := na
+
+//==================== Visual Elements ====================
+// Trend highlight (context bullish)
+bgcolor(showHighlight and htfTrendBullish ? highlightColor : na, title="Trend Highlight")
+// Background color for entry setup
+bgcolor(entrySetupDetected and tradeState == STATE_NO_TRADE ? color.new(color.green, 90) : na, title="Setup Detected")
+// Validation signal at bottom
+plotchar(showValidation and validationSignal, title="Validation Signal", char="▬", location=location.bottom, color=validationColor, size=size.tiny)
+
+// Context & Validation watermark (C: / V: — green when bullish, black when not)
+var table contextWatermark = table.new(position.top_right, 1, 2, bgcolor=color.new(color.white, 100), frame_width=0, border_width=0)
+if barstate.islast
+    table.cell(contextWatermark, 0, 0, "C: " + htfTrendTF, text_color=htfTrendBullish ? color.green : color.black, text_size=size.normal)
+    table.cell(contextWatermark, 0, 1, "V: " + validationTF, text_color=validationSignal ? color.green : color.black, text_size=size.normal)
+
+//==================== Status Display ====================
+var table statusTable = table.new(position.bottom_right, 2, 12, bgcolor=color.new(color.white, 95), 
+     frame_width=1, border_width=1, border_color=color.gray)
+
+// Show table if trade is active or completed (within 3 bars)
+showTable = tradeState == STATE_PENDING or tradeState == STATE_IN_TRADE or (tradeState == STATE_COMPLETED and not na(completedBarIndex) and (bar_index - completedBarIndex) <= 3)
+
+if barstate.islast and showTable
+    // Header
+    table.cell(statusTable, 0, 0, "Trade Manager", text_color=color.black, text_size=size.normal, bgcolor=color.new(color.blue, 80))
+    table.cell(statusTable, 1, 0, "", bgcolor=color.new(color.blue, 80))
+    
+    // Ticker/Symbol
+    tickerText = syminfo.ticker
+    table.cell(statusTable, 0, 1, "Symbol:", text_color=color.black, text_size=size.small)
+    table.cell(statusTable, 1, 1, tickerText, text_color=color.black, text_size=size.small)
+    
+    // Timeframe
+    tfText = timeframe.period
+    table.cell(statusTable, 0, 2, "Timeframe:", text_color=color.black, text_size=size.small)
+    table.cell(statusTable, 1, 2, tfText, text_color=color.black, text_size=size.small)
+    
+    // Setup Time (when entry line was created)
+    setupDateTimeText = "-"
+    if not na(setupTime)
+        // Convert UTC to UTC+11: 11 hours = 39,600,000 milliseconds
+        utc11Offset = 11 * 60 * 60 * 1000
+        utc11SetupTime = setupTime + utc11Offset
+        setupDateTimeText := str.format("{0,date,dd MMM yyyy} {0,time,HH:mm}", utc11SetupTime)
+    table.cell(statusTable, 0, 3, "Setup Time:", text_color=color.black, text_size=size.small)
+    table.cell(statusTable, 1, 3, setupDateTimeText, text_color=color.black, text_size=size.small)
+    
+    // Entry Date/Time (UTC+11 - AEDT) - when trade was entered
+    entryDateTimeText = "-"
+    entryDayOfWeek = "-"
+    // Show entry time if trade is active or was active
+    if not na(entryTime)
+        // Convert UTC to UTC+11: 11 hours = 11 * 60 * 60 * 1000 = 39,600,000 milliseconds
+        utc11Offset = 11 * 60 * 60 * 1000
+        utc11Time = entryTime + utc11Offset
+        entryDateTimeText := str.format("{0,date,dd MMM yyyy} {0,time,HH:mm}", utc11Time)
+        entryDayOfWeek := str.format("{0,date,EEEE}", utc11Time)  // Full day name (Monday, Tuesday, etc.)
+    table.cell(statusTable, 0, 4, "Entry Time:", text_color=color.black, text_size=size.small)
+    table.cell(statusTable, 1, 4, entryDateTimeText, text_color=color.black, text_size=size.small)
+    
+    // Entry Day of Week
+    table.cell(statusTable, 0, 5, "Entry Day:", text_color=color.black, text_size=size.small)
+    table.cell(statusTable, 1, 5, entryDayOfWeek, text_color=color.black, text_size=size.small)
+    
+    // State
+    stateColor = tradeState == STATE_PENDING ? color.orange : 
+                 tradeState == STATE_IN_TRADE ? color.green : color.gray
+    table.cell(statusTable, 0, 6, "State:", text_color=color.black, text_size=size.small)
+    table.cell(statusTable, 1, 6, tradeState, text_color=color.white, text_size=size.small, bgcolor=color.new(stateColor, 50))
+    
+    // Entry
+    entryText = not na(entryPrice) ? str.tostring(entryPrice, format.mintick) : "-"
+    table.cell(statusTable, 0, 7, "Entry:", text_color=color.black, text_size=size.small)
+    table.cell(statusTable, 1, 7, entryText, text_color=color.black, text_size=size.small)
+    
+    // SL
+    slText = not na(stopLossPrice) ? str.tostring(stopLossPrice, format.mintick) : "-"
+    table.cell(statusTable, 0, 8, "SL:", text_color=color.black, text_size=size.small)
+    table.cell(statusTable, 1, 8, slText, text_color=color.black, text_size=size.small)
+    
+    // SL Size (in ATR) - show the input multiplier value
+    slSizeText = str.tostring(atrMultiplier, "#.#") + " ATR"
+    table.cell(statusTable, 0, 9, "SL Size:", text_color=color.black, text_size=size.small)
+    table.cell(statusTable, 1, 9, slSizeText, text_color=color.black, text_size=size.small)
+    
+    // BE Status
+    beText = breakEvenTriggered ? "YES" : "NO"
+    beColor = breakEvenTriggered ? color.green : color.gray
+    table.cell(statusTable, 0, 10, "BE Active:", text_color=color.black, text_size=size.small)
+    table.cell(statusTable, 1, 10, beText, text_color=color.white, text_size=size.small, bgcolor=color.new(beColor, 70))
+    
+    // Risk:Reward Ratio (dynamic - updates as price moves)
+    var string rrText = "-"
+    
+    // If trade is completed, show final RR based on exit reason
+    if tradeState == STATE_COMPLETED and not na(exitReason)
+        if exitReason == "BE"
+            rrText := "0"  // Break even = 0RR
+        else if exitReason == "SL"
+            rrText := "-1"  // Stop loss = -1RR
+        else if exitReason == "TP"
+            // Calculate TP RR
+            if not na(entryPrice) and not na(stopLossPrice) and not na(takeProfitPrice)
+                riskDist = entryPrice - stopLossPrice
+                if riskDist != 0
+                    rewardDist = takeProfitPrice - entryPrice
+                    rr = rewardDist / riskDist
+                    rrText := "+" + str.tostring(rr, "#.#")
+        // For MANUAL exit, calculate based on current price
+        else if exitReason == "MANUAL" and not na(entryPrice) and not na(stopLossPrice)
+            riskDist = entryPrice - stopLossPrice
+            if riskDist != 0
+                currPrice = close
+                pl = currPrice - entryPrice
+                rr = pl / riskDist
+                if rr >= 0
+                    rrText := "+" + str.tostring(rr, "#.#")
+                else
+                    rrText := str.tostring(rr, "#.#")
+    // Calculate RR for active trades
+    else if not na(entryPrice) and not na(stopLossPrice)
+        riskDist = entryPrice - stopLossPrice
+        if riskDist != 0
+            currPrice = close
+            pl = currPrice - entryPrice
+            rr = pl / riskDist
+            
+            if rr >= 0
+                rrText := "+" + str.tostring(rr, "#.#")
+            else
+                rrText := str.tostring(rr, "#.#")
+    else
+        rrText := "-"
+    
+    table.cell(statusTable, 0, 11, "RR:", text_color=color.black, text_size=size.small)
+    table.cell(statusTable, 1, 11, rrText, text_color=color.black, text_size=size.small)
+
+//==================== Alert Conditions ====================
+alertcondition(entrySetupDetected and tradeState == STATE_NO_TRADE, "Entry Setup", "Entry setup detected!")
+alertcondition(tradeState == STATE_PENDING and close < ema20, "Setup Cancelled", "Entry setup cancelled - price below EMA20")
+alertcondition(breakEvenTriggered, "Break Even Hit", "Break even triggered - SL moved to entry")

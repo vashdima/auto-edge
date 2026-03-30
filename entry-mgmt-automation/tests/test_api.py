@@ -215,6 +215,41 @@ def test_entries_valid_run_one_trade_returns_entry_map(db_one_run_one_trade):
         assert key in bar, f"chartBuffer bar missing key {key}"
 
 
+def test_entries_summary_empty_buffers(db_one_run_one_trade):
+    """GET /entries?summary=true returns metadata with empty buffers (no aligned load path for UI)."""
+    path, run_id = db_one_run_one_trade
+    app = create_app(db_path=path, config=MINIMAL_CONFIG)
+    client = TestClient(app)
+    r = client.get("/entries", params={"run_id": run_id, "summary": "true"})
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 1
+    m = data[0]
+    assert m["chartBuffer"] == []
+    assert m["contextBuffer"] == []
+    assert m["validationBuffer"] == []
+    assert m["entryPrice"] == 150.0
+    assert m["trade_id"] >= 1
+
+
+def test_trade_buffers_returns_chart_data(db_one_run_one_trade):
+    """GET /trade-buffers fills chart/context/validation buffers for a trade id."""
+    path, run_id = db_one_run_one_trade
+    app = create_app(db_path=path, config=MINIMAL_CONFIG)
+    client = TestClient(app)
+    summ = client.get("/entries", params={"run_id": run_id, "summary": "true"}).json()
+    tid = summ[0]["trade_id"]
+    r = client.get("/trade-buffers", params={"run_id": run_id, "trade_ids": str(tid)})
+    assert r.status_code == 200
+    patches = r.json()
+    assert len(patches) == 1
+    p = patches[0]
+    assert p["trade_id"] == tid
+    assert isinstance(p["chartBuffer"], list)
+    assert len(p["chartBuffer"]) >= 1
+    assert "time" in p["chartBuffer"][0]
+
+
 # --- GET /run-stats ---
 
 

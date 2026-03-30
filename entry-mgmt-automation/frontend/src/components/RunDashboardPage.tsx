@@ -124,7 +124,10 @@ export function RunDashboardPage({ run, onBack }: RunDashboardPageProps) {
   const [mcMode, setMcMode] = useState<MonteCarloMode>('bootstrap')
   const [hourlySortKey, setHourlySortKey] = useState<HourlySortKey>('hour')
   const [hourlySortDirection, setHourlySortDirection] = useState<SortDirection>('asc')
-  const simCount = 500
+  const simCount = useMemo(() => {
+    const n = stats?.rrSeries?.length ?? 0
+    return n > 150 ? 200 : 500
+  }, [stats?.rrSeries?.length])
 
   useEffect(() => {
     let cancelled = false

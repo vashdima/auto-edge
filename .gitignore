@@ -24,4 +24,4 @@ env/
 Thumbs.db
 
 # DB
-.db
+*.db

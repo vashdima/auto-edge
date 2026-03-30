@@ -3,21 +3,42 @@ C2: HTTP API for run selector, entry maps, and run-level stats.
 
 Exposes:
 - GET /runs (list runs for selector)
-- GET /entries?run_id=... or run_key=...
+- GET /entries?run_id=... or run_key=... [&summary=1]
+- GET /trade-buffers?run_id=...&trade_ids=1,2,3
 - GET /run-stats?run_id=... or run_key=...
 """
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 
-from entry_maps import build_entry_maps_for_run
+from entry_maps import (
+    build_entry_maps_for_run,
+    build_entry_summaries_for_run,
+    build_trade_buffers_for_run,
+)
 from mtf_loader import get_db_path, load_config
+
+# In-memory cache: invalidate when SQLite file mtime changes.
+_entries_cache: dict[tuple, tuple[float, Any]] = {}
+
+
+def _cache_get_or_set(path: str, key: tuple, factory: Callable[[], Any]) -> Any:
+    mtime = os.path.getmtime(path) if os.path.isfile(path) else 0.0
+    cache_key = (path, key)
+    hit = _entries_cache.get(cache_key)
+    if hit is not None and hit[0] == mtime:
+        return hit[1]
+    data = factory()
+    _entries_cache[cache_key] = (mtime, data)
+    return data
 
 
 def _resolve_run_id_or_404(
@@ -81,6 +102,7 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(GZipMiddleware, minimum_size=500)
 
     @app.get("/runs")
     def list_runs() -> list[dict[str, Any]]:
@@ -102,12 +124,27 @@ def create_app(
     def get_entries(
         run_id: Optional[int] = Query(None, description="Run ID"),
         run_key: Optional[str] = Query(None, description="Run key"),
+        summary: bool = Query(
+            False,
+            description="If true, return trade metadata with empty buffers (fast); use /trade-buffers to load charts",
+        ),
     ) -> list[dict[str, Any]]:
         """Return entry maps for the given run (by run_id or run_key). 404 if run not found."""
         path = app.state.db_path
         config = app.state.config
         with sqlite3.connect(path) as conn:
             resolved_run_id = _resolve_run_id_or_404(conn, run_id, run_key)
+        if summary:
+
+            def _build_summary() -> list[dict[str, Any]]:
+                return build_entry_summaries_for_run(
+                    run_id=resolved_run_id,
+                    run_key=None,
+                    db_path=path,
+                    config=config,
+                )
+
+            return _cache_get_or_set(path, ("entries_summary", resolved_run_id), _build_summary)
         maps = build_entry_maps_for_run(
             run_id=resolved_run_id,
             run_key=None,
@@ -115,6 +152,40 @@ def create_app(
             config=config,
         )
         return maps
+
+    @app.get("/trade-buffers")
+    def get_trade_buffers(
+        run_id: Optional[int] = Query(None, description="Run ID"),
+        run_key: Optional[str] = Query(None, description="Run key"),
+        trade_ids: str = Query(..., description="Comma-separated raw_trades.id values"),
+    ) -> list[dict[str, Any]]:
+        """Return chart/context/validation buffers for specific trades (lazy-load for UI)."""
+        path = app.state.db_path
+        config = app.state.config
+        raw = trade_ids.strip()
+        if not raw:
+            return []
+        try:
+            ids = [int(x.strip()) for x in raw.split(",") if x.strip()]
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail="trade_ids must be comma-separated integers") from e
+        if not ids:
+            return []
+        with sqlite3.connect(path) as conn:
+            resolved_run_id = _resolve_run_id_or_404(conn, run_id, run_key)
+
+        cache_key = ("trade_buffers", resolved_run_id, tuple(sorted(ids)))
+
+        def _build() -> list[dict[str, Any]]:
+            return build_trade_buffers_for_run(
+                run_id=resolved_run_id,
+                run_key=None,
+                trade_ids=ids,
+                db_path=path,
+                config=config,
+            )
+
+        return _cache_get_or_set(path, cache_key, _build)
 
     @app.get("/run-stats")
     def get_run_stats(

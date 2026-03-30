@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
-import { fetchEntries, fetchRuns } from './api'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { fetchEntries, fetchRuns, fetchTradeBuffers, type TradeBuffersPatch } from './api'
 import type { EntryMap, Run } from './types'
 import { EntryCandlesChart } from './components/EntryCandlesChart'
 import { ContextCandlesChart } from './components/ContextCandlesChart'
@@ -29,6 +29,21 @@ function saveStoredRun(run: Run | null): void {
   localStorage.setItem(STORAGE_KEY_RUN, JSON.stringify(payload))
 }
 
+function mergeBufferPatches(entries: EntryMap[], patches: TradeBuffersPatch[]): EntryMap[] {
+  const byId = new Map(patches.map((p) => [p.trade_id, p]))
+  return entries.map((e) => {
+    const p = byId.get(e.trade_id)
+    if (!p) return e
+    return {
+      ...e,
+      chartBuffer: p.chartBuffer,
+      contextBuffer: p.contextBuffer,
+      validationBuffer: p.validationBuffer,
+      enrichScore: p.enrichScore ?? e.enrichScore,
+    }
+  })
+}
+
 export function App() {
   const [runs, setRuns] = useState<Run[]>([])
   const [selectedRun, setSelectedRun] = useState<Run | null>(null)
@@ -40,13 +55,15 @@ export function App() {
   const [loadingRuns, setLoadingRuns] = useState(true)
   const [loadingEntries, setLoadingEntries] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const bufferLoadedIdsRef = useRef<Set<number>>(new Set())
 
   const fetchEntriesForRun = useCallback((run: Run) => {
     setLoadingEntries(true)
     setError(null)
     const runKey = run.run_key ?? undefined
     const runId = run.run_id
-    fetchEntries(runKey ? undefined : runId, runKey)
+    bufferLoadedIdsRef.current = new Set()
+    fetchEntries(runKey ? undefined : runId, runKey, { summary: true })
       .then((data) => setEntries(data))
       .catch((err) => setError(String(err.message)))
       .finally(() => setLoadingEntries(false))
@@ -69,7 +86,8 @@ export function App() {
           if (run) {
             setSelectedRun(run)
             setLoadingEntries(true)
-            fetchEntries(run.run_key ? undefined : run.run_id, run.run_key ?? undefined)
+            bufferLoadedIdsRef.current = new Set()
+            fetchEntries(run.run_key ? undefined : run.run_id, run.run_key ?? undefined, { summary: true })
               .then((entriesData) => setEntries(entriesData))
               .catch((err) => setError(String(err.message)))
               .finally(() => setLoadingEntries(false))
@@ -99,12 +117,45 @@ export function App() {
     if (run) {
       setSelectedRun(run)
       setLoadingEntries(true)
-      fetchEntries(run.run_key ? undefined : run.run_id, run.run_key ?? undefined)
+      bufferLoadedIdsRef.current = new Set()
+      fetchEntries(run.run_key ? undefined : run.run_id, run.run_key ?? undefined, { summary: true })
         .then((entriesData) => setEntries(entriesData))
         .catch((err) => setError(String(err.message)))
         .finally(() => setLoadingEntries(false))
     }
   }, [runs, selectedRun])
+
+  const highlightedTradeId =
+    highlightedIndex != null && entries[highlightedIndex] != null
+      ? entries[highlightedIndex]!.trade_id
+      : null
+
+  useEffect(() => {
+    if (selectedRun == null || highlightedTradeId == null) return
+    const tid = highlightedTradeId
+    if (bufferLoadedIdsRef.current.has(tid)) return
+    const trade = entries.find((e) => e.trade_id === tid)
+    if (!trade) return
+    if (trade.chartBuffer.length > 0) {
+      bufferLoadedIdsRef.current.add(tid)
+      return
+    }
+    const runKey = selectedRun.run_key ?? undefined
+    const runId = selectedRun.run_id
+    let cancelled = false
+    fetchTradeBuffers([tid], runKey ? undefined : runId, runKey)
+      .then((patches) => {
+        if (cancelled) return
+        setEntries((prev) => mergeBufferPatches(prev, patches))
+        bufferLoadedIdsRef.current.add(tid)
+      })
+      .catch((err) => {
+        if (!cancelled) setError(String(err.message))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [selectedRun, highlightedTradeId, entries])
 
   const handleRunSelect = useCallback(
     (run: Run | null) => {

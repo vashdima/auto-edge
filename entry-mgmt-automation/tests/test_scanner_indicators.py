@@ -10,6 +10,7 @@ import pytest
 from scanner_indicators import (
     ALL_INDICATOR_COLUMNS,
     CHART_INDICATOR_COLUMNS,
+    VALIDATION_INDICATOR_COLUMNS,
     add_all_indicators,
     add_chart_indicators,
     add_context_indicators,
@@ -117,7 +118,7 @@ def test_add_context_indicators():
 
 
 def test_add_validation_indicators():
-    """add_validation_indicators adds val_ema_slow, val_ema_medium, and val_ema_fast."""
+    """add_validation_indicators adds val_ema_slow, val_ema_medium, val_ema_fast, and val_atr."""
     t0 = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
     df = pd.DataFrame({
         "time": [t0.replace(hour=h) for h in range(5)],
@@ -127,13 +128,19 @@ def test_add_validation_indicators():
         "val_time": [t0] * 5,
         "val_open": 98.0, "val_high": 102.0, "val_low": 97.0, "val_close": 100.0, "val_volume": 50,
     })
-    result = add_validation_indicators(df, ema_slow_period=2, ema_medium_period=2, ema_fast_period=3)
-    assert "val_ema_slow" in result.columns
-    assert "val_ema_medium" in result.columns
-    assert "val_ema_fast" in result.columns
+    result = add_validation_indicators(
+        df,
+        ema_slow_period=2,
+        ema_medium_period=2,
+        ema_fast_period=3,
+        atr_period=5,
+    )
+    for col in VALIDATION_INDICATOR_COLUMNS:
+        assert col in result.columns
     assert result["val_ema_slow"].notna().iloc[-1]
     assert result["val_ema_medium"].notna().iloc[-1]
     assert result["val_ema_fast"].notna().iloc[-1]
+    assert result["val_atr"].notna().iloc[-1]
 
 
 def test_add_all_indicators():

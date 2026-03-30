@@ -7,7 +7,7 @@ B1.2c: Distance filter — distance_from_ema, distance_in_atr, price_not_too_far
 B1.2d: EMAs up — ema_slow_sloping_up, ema_medium_sloping_up, ema_fast_sloping_up, all_emas_up (uses ema_* from DB).
 B1.2e: Combine — chart_setup_detected (chart-only: breakout window + pause + EMAs up + distance; no context/validation).
 B1.3: Context (HTF) — context_bullish = ctx_ema_slow > ctx_ema_fast and ctx_close > ctx_ema_slow (uses ctx_* from DB).
-B1.4: Validation — val_ema_slow_prev, val_is_locked (stateful), val_ema_sloping_up, val_price_above_ema, validation_ok (uses val_* from DB).
+B1.4: Validation — val_ema_fast_prev, val_is_locked (stateful), val_ema_sloping_up, val_price_above_ema, validation_ok; optional validation RE gate (uses val_* from DB).
 B1.5: Combine — entry_setup_detected = chart_setup_detected and context_bullish and validation_ok (Pine: entrySetupDetected).
 """
 
@@ -47,6 +47,20 @@ def _context_re_multiplier(config: dict[str, Any] | None) -> float:
         return 1.4
     ed = config.get("entry_detection") or {}
     return float(ed.get("contextReAtrMultiplier", 1.4))
+
+
+def _validation_re_enabled(config: dict[str, Any] | None) -> bool:
+    if config is None:
+        return False
+    ed = config.get("entry_detection") or {}
+    return bool(ed.get("validationReEnabled", False))
+
+
+def _validation_re_multiplier(config: dict[str, Any] | None) -> float:
+    if config is None:
+        return 1.4
+    ed = config.get("entry_detection") or {}
+    return float(ed.get("validationReAtrMultiplier", 1.4))
 
 
 def add_breakout_state(
@@ -284,13 +298,18 @@ def add_context_bullish(df: pd.DataFrame, config: dict[str, Any] | None = None) 
     return out
 
 
-def add_validation_ok(df: pd.DataFrame) -> pd.DataFrame:
+def add_validation_ok(
+    df: pd.DataFrame,
+    config: dict[str, Any] | None = None,
+) -> pd.DataFrame:
     """
     Add validation columns: val_ema_fast_prev, val_is_locked, val_ema_sloping_up, val_price_above_ema, validation_ok.
 
     Validation uses the fast (20) EMA (Pine: valEMA20). valIsLocked when valHigh < val_ema_fast, unlock when valLow > val_ema_fast;
     val_ema_sloping_up = val_ema_fast > val_ema_fast_prev; val_price_above_ema = any OHLC > val_ema_fast.
-    Requires columns from DB: val_time, val_ema_fast, val_open, val_high, val_low, val_close.
+    If entry_detection.validationReEnabled is true, also require a stateful validation RE regime (same rules as context RE):
+      trigger: val_re_ratio >= validationReAtrMultiplier; reset: val_close < val_ema_fast on finalized validation bar.
+    Requires columns from DB: val_time, val_ema_fast, val_open, val_high, val_low, val_close; val_atr for RE (optional, NaN-safe).
     """
     out = df.copy()
 
@@ -341,9 +360,62 @@ def add_validation_ok(df: pd.DataFrame) -> pd.DataFrame:
         | (out["val_high"] > out["val_ema_fast"])
         | (out["val_low"] > out["val_ema_fast"])
     ).fillna(False).astype(bool)
-    out["validation_ok"] = (
+    out["validation_ok_base"] = (
         (~out["val_is_locked"]) & out["val_ema_sloping_up"] & out["val_price_above_ema"]
     ).astype(bool)
+
+    for col in ("val_high", "val_low", "val_atr"):
+        if col not in out.columns:
+            out[col] = np.nan
+    re_mult = _validation_re_multiplier(config)
+    val_bars_re = (
+        out.groupby("val_time", as_index=False)
+        .agg(
+            {
+                "val_high": "last",
+                "val_low": "last",
+                "val_close": "last",
+                "val_atr": "last",
+                "val_ema_fast": "last",
+            }
+        )
+        .sort_values("val_time")
+        .reset_index(drop=True)
+    )
+    val_bars_re["val_re_ratio"] = (
+        (val_bars_re["val_high"] - val_bars_re["val_low"])
+        / val_bars_re["val_atr"].replace(0, np.nan)
+    )
+    val_bars_re["val_re_trigger"] = (val_bars_re["val_re_ratio"] >= re_mult).fillna(False).astype(bool)
+    val_bars_re["val_re_reset"] = (
+        val_bars_re["val_close"] < val_bars_re["val_ema_fast"]
+    ).fillna(False).astype(bool)
+    val_re_state: list[bool] = []
+    val_re_active = False
+    for _, row in val_bars_re.iterrows():
+        if bool(row["val_re_trigger"]):
+            val_re_active = True
+        if bool(row["val_re_reset"]):
+            val_re_active = False
+        val_re_state.append(val_re_active)
+    val_bars_re["val_re_state_active"] = val_re_state
+    out = out.merge(
+        val_bars_re[
+            ["val_time", "val_re_ratio", "val_re_trigger", "val_re_reset", "val_re_state_active"]
+        ],
+        on="val_time",
+        how="left",
+    )
+    out["val_re_ratio"] = out["val_re_ratio"].astype(float)
+    out["val_re_trigger"] = out["val_re_trigger"].fillna(False).astype(bool)
+    out["val_re_reset"] = out["val_re_reset"].fillna(False).astype(bool)
+    out["val_re_state_active"] = out["val_re_state_active"].fillna(False).astype(bool)
+
+    if _validation_re_enabled(config):
+        out["validation_ok"] = out["validation_ok_base"] & out["val_re_state_active"]
+    else:
+        out["validation_ok"] = out["validation_ok_base"]
+    out["validation_ok"] = out["validation_ok"].astype(bool)
     return out
 
 
@@ -415,7 +487,7 @@ if __name__ == "__main__":
         # B1.4: validation (requires val_* from DB)
         val_required = ["val_time", "val_ema_fast", "val_open", "val_high", "val_low", "val_close"]
         if all(c in with_conditions.columns for c in val_required):
-            with_conditions = add_validation_ok(with_conditions)
+            with_conditions = add_validation_ok(with_conditions, config)
             n_val = with_conditions["validation_ok"].sum()
         else:
             n_val = None

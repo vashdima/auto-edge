@@ -38,6 +38,9 @@ entry_detection:
   # keep active until reset when ctx_close < ctx_ema_fast.
   contextReEnabled: false
   contextReAtrMultiplier: 1.4
+  # Optional Validation RE gate (stateful, same rules as context RE on validation TF bars).
+  validationReEnabled: false
+  validationReAtrMultiplier: 1.4
   # Enrich score range (optional): only allow entry when enrich_score is in [min, max] (inclusive). Omit both to disable.
   # enrichScoreMin: 3
   # enrichScoreMax: 8

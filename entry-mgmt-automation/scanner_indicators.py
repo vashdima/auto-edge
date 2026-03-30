@@ -2,7 +2,7 @@
 Chart, context, and validation indicators for B1.1.
 
 Computes ema_slow, ema_medium, ema_fast, atr (chart); ctx_ema_slow, ctx_ema_fast, ctx_atr (context);
-val_ema_slow (validation). Config: slowEMAPeriod, mediumEMAPeriod, fastEMAPeriod, atrPeriod.
+val_ema_slow, val_ema_medium, val_ema_fast, val_atr (validation). Config: slowEMAPeriod, mediumEMAPeriod, fastEMAPeriod, atrPeriod.
 Column names are fixed so changing period values does not require DB schema change.
 """
 
@@ -126,29 +126,45 @@ def add_validation_indicators(
     ema_slow_period: int | None = None,
     ema_medium_period: int | None = None,
     ema_fast_period: int | None = None,
+    atr_period: int | None = None,
 ) -> pd.DataFrame:
     """
-    Add validation TF indicators: val_ema_slow, val_ema_medium, val_ema_fast.
+    Add validation TF indicators: val_ema_slow, val_ema_medium, val_ema_fast, val_atr.
 
-    Validation logic (Pine valEMA20) uses the fast-period EMA; all three are written for chart display.
-    Builds validation bar series (one close per val_time), computes EMAs, maps back to each chart row.
+    Validation logic (Pine valEMA20) uses the fast-period EMA; all three EMAs are written for chart display.
+    val_atr uses the same ATR period as chart/context (risk_management.atrPeriod).
+    Builds validation bar series (finalized OHLC per val_time), computes EMAs and ATR, maps back to each chart row.
     """
     out = df.copy()
     if config is not None:
-        slow, medium, fast, _ = _periods_from_config(config)
+        slow, medium, fast, atr_p = _periods_from_config(config)
     else:
         slow = ema_slow_period or _DEFAULT_SLOW
         medium = ema_medium_period or _DEFAULT_MEDIUM
         fast = ema_fast_period or _DEFAULT_FAST
+        atr_p = atr_period or _DEFAULT_ATR
 
-    val_bars = out.groupby("val_time", as_index=False).agg({"val_close": "last"})
+    val_bars = out.groupby("val_time", as_index=False).agg(
+        {"val_high": "last", "val_low": "last", "val_close": "last"}
+    )
     val_bars = val_bars.sort_values("val_time").reset_index(drop=True)
     val_bars["val_ema_slow"] = _ema(val_bars["val_close"], slow)
     val_bars["val_ema_medium"] = _ema(val_bars["val_close"], medium)
     val_bars["val_ema_fast"] = _ema(val_bars["val_close"], fast)
+    val_bars["val_atr"] = _atr(
+        val_bars["val_high"], val_bars["val_low"], val_bars["val_close"], atr_p
+    )
 
     out = out.merge(
-        val_bars[["val_time", "val_ema_slow", "val_ema_medium", "val_ema_fast"]],
+        val_bars[
+            [
+                "val_time",
+                "val_ema_slow",
+                "val_ema_medium",
+                "val_ema_fast",
+                "val_atr",
+            ]
+        ],
         on="val_time",
         how="left",
     )
@@ -158,7 +174,12 @@ def add_validation_indicators(
 # Indicator column names for DB and consumers
 CHART_INDICATOR_COLUMNS = ["ema_slow", "ema_medium", "ema_fast", "atr"]
 CONTEXT_INDICATOR_COLUMNS = ["ctx_ema_slow", "ctx_ema_medium", "ctx_ema_fast", "ctx_atr"]
-VALIDATION_INDICATOR_COLUMNS = ["val_ema_slow", "val_ema_medium", "val_ema_fast"]
+VALIDATION_INDICATOR_COLUMNS = [
+    "val_ema_slow",
+    "val_ema_medium",
+    "val_ema_fast",
+    "val_atr",
+]
 ALL_INDICATOR_COLUMNS = (
     CHART_INDICATOR_COLUMNS + CONTEXT_INDICATOR_COLUMNS + VALIDATION_INDICATOR_COLUMNS
 )

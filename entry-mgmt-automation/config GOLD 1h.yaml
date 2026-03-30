@@ -29,6 +29,8 @@ entry_detection:
   maxDistanceFromEMA:  2.0 # Pine default 2.0, min 0.1 step 0.1 (ATR multiples)
   contextReEnabled: false      # RE context regime gate; disabled keeps legacy behavior
   contextReAtrMultiplier: 1.4  # Trigger threshold for (ctx_high - ctx_low) / ctx_atr
+  validationReEnabled: false
+  validationReAtrMultiplier: 1.4
   # Enrich score range (optional): only allow entry when enrich_score is in [min, max] (inclusive). Omit both to disable.
   # enrichScoreMin: 2
   # enrichScoreMax: 20

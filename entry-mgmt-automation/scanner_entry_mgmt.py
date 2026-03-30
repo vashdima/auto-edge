@@ -74,7 +74,7 @@ def main(config_path: str | None = None) -> None:
                 n_ctx = None
             val_required = ["val_time", "val_ema_fast", "val_open", "val_high", "val_low", "val_close"]
             if all(c in with_conditions.columns for c in val_required):
-                with_conditions = add_validation_ok(with_conditions)
+                with_conditions = add_validation_ok(with_conditions, config)
                 n_val = with_conditions["validation_ok"].sum()
             else:
                 n_val = None

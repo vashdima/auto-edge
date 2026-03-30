@@ -13,7 +13,7 @@ B1.5: Combine — entry_setup_detected.
 
 import pandas as pd
 import pytest
-from typing import Optional
+from typing import List, Optional
 
 from scanner_entry_logic import (
     add_breakout_state,
@@ -518,16 +518,20 @@ def _df_validation(
     val_high: list[float],
     val_low: list[float],
     val_close: list[float],
+    val_atr: Optional[List[float]] = None,
 ) -> pd.DataFrame:
     """Minimal DataFrame for add_validation_ok tests (uses val_ema_fast = 20-period). val_time can be same for multiple rows."""
-    return pd.DataFrame({
+    d = {
         "val_time": val_time,
         "val_ema_fast": val_ema_fast,
         "val_open": val_open,
         "val_high": val_high,
         "val_low": val_low,
         "val_close": val_close,
-    })
+    }
+    if val_atr is not None:
+        d["val_atr"] = val_atr
+    return pd.DataFrame(d)
 
 
 def test_val_ema_sloping_up():
@@ -670,9 +674,112 @@ def test_validation_ok_adds_columns():
         val_close=[101.0, 102.0],
     )
     result = add_validation_ok(df)
-    for col in ("val_ema_fast_prev", "val_is_locked", "val_ema_sloping_up", "val_price_above_ema", "validation_ok"):
+    for col in (
+        "val_ema_fast_prev",
+        "val_is_locked",
+        "val_ema_sloping_up",
+        "val_price_above_ema",
+        "validation_ok_base",
+        "validation_ok",
+        "val_re_ratio",
+        "val_re_trigger",
+        "val_re_reset",
+        "val_re_state_active",
+    ):
         assert col in result.columns
     assert len(result) == 2
+
+
+def test_validation_ok_re_enabled_stateful_trigger_persists_until_reset():
+    """With validationReEnabled, RE trigger on prior validation bar keeps later rows valid until reset."""
+    # val_ema_fast rises so val_ema_sloping_up holds (except first bar); OHLC stays unlocked vs ema.
+    # Larger val_atr so bar 4 can stay below RE threshold while still resetting (close < ema_fast).
+    df = _df_validation(
+        val_time=[1, 2, 3, 4, 5],
+        val_ema_fast=[100.0, 101.0, 102.0, 103.0, 104.0],
+        val_open=[102.0, 102.0, 102.0, 102.0, 102.0],
+        val_high=[101.0, 105.0, 101.0, 103.0, 107.0],
+        val_low=[100.0, 100.0, 100.0, 100.0, 100.0],
+        val_close=[102.0, 102.0, 102.0, 101.0, 105.0],
+        val_atr=[3.0, 3.0, 3.0, 3.0, 3.0],
+    )
+    cfg = {"entry_detection": {"validationReEnabled": True, "validationReAtrMultiplier": 1.4}}
+    result = add_validation_ok(df, cfg)
+    assert result["val_re_trigger"].tolist() == [False, True, False, False, True]
+    assert result["val_re_reset"].tolist() == [False, False, False, True, False]
+    assert result["val_re_state_active"].tolist() == [False, True, True, False, True]
+    assert result["validation_ok"].tolist() == (
+        result["validation_ok_base"] & result["val_re_state_active"]
+    ).tolist()
+
+
+def test_validation_ok_re_disabled_matches_base_logic():
+    """With validationReEnabled false, validation_ok equals validation_ok_base."""
+    df = _df_validation(
+        val_time=[1, 2],
+        val_ema_fast=[100.0, 100.0],
+        val_open=[101.0, 101.0],
+        val_high=[104.0, 101.0],
+        val_low=[100.0, 100.0],
+        val_close=[101.0, 101.0],
+        val_atr=[2.0, 2.0],
+    )
+    cfg = {"entry_detection": {"validationReEnabled": False, "validationReAtrMultiplier": 1.4}}
+    result = add_validation_ok(df, cfg)
+    assert result["validation_ok"].tolist() == result["validation_ok_base"].tolist()
+
+
+def test_validation_re_atr_zero_safe():
+    """ATR zero/NaN should not trigger RE and should keep state inactive when validation RE enabled."""
+    df = _df_validation(
+        val_time=[1, 2],
+        val_ema_fast=[100.0, 100.0],
+        val_open=[101.0, 101.0],
+        val_high=[104.0, 104.0],
+        val_low=[100.0, 100.0],
+        val_close=[101.0, 101.0],
+        val_atr=[0.0, float("nan")],
+    )
+    cfg = {"entry_detection": {"validationReEnabled": True, "validationReAtrMultiplier": 1.4}}
+    result = add_validation_ok(df, cfg)
+    assert result["val_re_trigger"].tolist() == [False, False]
+    assert result["val_re_state_active"].tolist() == [False, False]
+    assert result["validation_ok"].tolist() == [False, False]
+
+
+def test_validation_re_uses_finalized_val_bar_not_first_row():
+    """RE trigger uses finalized (last) row per val_time so intra-bar range growth is captured."""
+    df = pd.DataFrame({
+        "val_time": [1, 1, 2, 2],
+        "val_ema_fast": [100.0, 100.0, 100.0, 100.0],
+        "val_open": [101.0, 101.0, 101.0, 101.0],
+        "val_high": [101.0, 104.0, 101.0, 101.0],
+        "val_low": [100.0, 100.0, 100.0, 100.0],
+        "val_close": [101.0, 101.0, 101.0, 101.0],
+        "val_atr": [2.0, 2.0, 2.0, 2.0],
+    })
+    cfg = {"entry_detection": {"validationReEnabled": True, "validationReAtrMultiplier": 1.4}}
+    result = add_validation_ok(df, cfg)
+    assert result["val_re_trigger"].tolist() == [True, True, False, False]
+    assert result["val_re_state_active"].tolist() == [True, True, True, True]
+
+
+def test_validation_re_reset_uses_finalized_val_bar_close():
+    """Reset should apply when finalized val_close for a validation bar falls below val_ema_fast."""
+    df = pd.DataFrame({
+        "val_time": [1, 1, 2, 2, 3, 3],
+        "val_ema_fast": [100.0] * 6,
+        "val_open": [101.0] * 6,
+        "val_high": [101.0, 104.0, 101.0, 101.0, 101.0, 104.0],
+        "val_low": [100.0] * 6,
+        "val_close": [101.0, 101.0, 101.0, 99.0, 101.0, 101.0],
+        "val_atr": [2.0] * 6,
+    })
+    cfg = {"entry_detection": {"validationReEnabled": True, "validationReAtrMultiplier": 1.4}}
+    result = add_validation_ok(df, cfg)
+    assert result["val_re_trigger"].tolist() == [True, True, False, False, True, True]
+    assert result["val_re_reset"].tolist() == [False, False, True, True, False, False]
+    assert result["val_re_state_active"].tolist() == [True, True, False, False, True, True]
 
 
 # --- B1.5: Combine — entry_setup_detected ---

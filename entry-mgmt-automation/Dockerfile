@@ -6,7 +6,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY api.py entry_maps.py mtf_loader.py oanda_client.py scanner_indicators.py scanner_entry_logic.py scanner_state_machine.py scanner_entry_mgmt.py ./
+COPY api.py entry_maps.py mtf_loader.py pip_math.py oanda_client.py scanner_indicators.py scanner_entry_logic.py scanner_state_machine.py scanner_entry_mgmt.py ./
 
 # config.yaml and data/ are typically mounted at run time
 ENV PYTHONUNBUFFERED=1

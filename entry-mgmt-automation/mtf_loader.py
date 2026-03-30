@@ -23,6 +23,7 @@ import yaml
 
 from oanda_client import OandaClient, _parse_iso_time
 from scanner_indicators import ALL_INDICATOR_COLUMNS
+from pip_math import ensure_pip_metadata_for_symbols
 
 ENRICH_SCORE_COLUMN = "enrich_score"
 
@@ -563,6 +564,7 @@ def load_aligned_full_buffer(config_path: str | None = None) -> dict[str, pd.Dat
     config = load_config(config_path)
     chart_tf = config["timeframes"]["entry"]
     symbols = config.get("symbols") or ["EUR_USD"]
+    ensure_pip_metadata_for_symbols(symbols)
     db_path = get_db_path(config, config_path)
     windows = resolve_scan_windows(config)
     per_window: list[dict[str, pd.DataFrame]] = []
@@ -812,6 +814,7 @@ def load_aligned(
     context_tf = timeframes["context"]
     validation_tf = timeframes["validation"]
     symbols = config.get("symbols") or ["EUR_USD"]
+    ensure_pip_metadata_for_symbols(symbols)
     windows = resolve_scan_windows(config)
     global_from = min(w[0] for w in windows)
     global_to = max(w[1] for w in windows)

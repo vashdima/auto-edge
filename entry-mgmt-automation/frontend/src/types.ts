@@ -38,6 +38,7 @@ export interface EntryMap {
   sl: number
   tp: number
   slSize: number | null
+  slPips: number
   beActive: boolean
   rr: number | null
   exitReason: string

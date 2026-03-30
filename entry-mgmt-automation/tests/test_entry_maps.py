@@ -116,6 +116,8 @@ def test_build_entry_maps_one_trade_minimal_db():
         assert m["entryDay"] == "2024-01-15"
         assert m["entryPrice"] == 150.0
         assert m["sl"] == 149.0
+        # USD_JPY pip size (from pip_metadata.json) is 0.01 => (150 - 149) / 0.01 = 100 pips
+        assert m["slPips"] == pytest.approx(100.0)
         assert m["tp"] == 152.0
         assert m["rr"] == 2.0
         assert m["exitReason"] == "TP"

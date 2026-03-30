@@ -1,0 +1,14 @@
+{
+  "EUR_USD": {
+    "pipLocation": -4,
+    "pipSize": 0.0001
+  },
+  "GBP_USD": {
+    "pipLocation": -4,
+    "pipSize": 0.0001
+  },
+  "USD_JPY": {
+    "pipLocation": -2,
+    "pipSize": 0.01
+  }
+}

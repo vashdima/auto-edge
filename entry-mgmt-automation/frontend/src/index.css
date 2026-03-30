@@ -416,6 +416,25 @@ body {
   color: #fff;
 }
 
+.pip-hist-trades-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.pip-hist-bar-track {
+  flex: 1;
+  height: 8px;
+  background: #eee;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.pip-hist-bar-fill {
+  height: 100%;
+  background: #1565c0;
+}
+
 .dashboard-placeholder-card {
   min-height: 140px;
 }

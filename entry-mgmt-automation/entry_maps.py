@@ -29,6 +29,7 @@ from mtf_loader import (
     load_aligned_from_db,
     load_config,
 )
+from pip_math import calc_sl_pips, get_pip_size
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -305,6 +306,11 @@ def _entry_map_dict(
         "sl": float(t["sl"]),
         "tp": float(t["tp"]),
         "slSize": float(t["sl_size"]) if t.get("sl_size") is not None else None,
+        "slPips": calc_sl_pips(
+            entry_price=float(t["entry_price"]),
+            sl_price=float(t["sl"]),
+            pip_size=get_pip_size(t["symbol"], entry_price=float(t["entry_price"])),
+        ),
         "beActive": False,
         "rr": float(t["rr"]) if t.get("rr") is not None else None,
         "exitReason": t["exit_reason"],

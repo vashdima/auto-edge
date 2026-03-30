@@ -317,13 +317,26 @@ def test_entries_valid_run_one_trade_returns_entry_map(db_one_run_one_trade):
     assert isinstance(data, list)
     assert len(data) == 1
     m = data[0]
-    for key in ("symbol", "chartTF", "entryTime", "entryPrice", "sl", "tp", "rr", "exitReason", "chartBuffer"):
+    for key in (
+        "symbol",
+        "chartTF",
+        "entryTime",
+        "entryPrice",
+        "sl",
+        "tp",
+        "slPips",
+        "rr",
+        "exitReason",
+        "chartBuffer",
+    ):
         assert key in m, f"missing key {key}"
     assert m["symbol"] == "USD_JPY"
     assert m["chartTF"] == "H1"
     assert m["entryPrice"] == 150.0
     assert m["sl"] == 149.0
     assert m["tp"] == 152.0
+    # USD_JPY pip size (from pip_metadata.json) is 0.01 => (150 - 149) / 0.01 = 100 pips
+    assert m["slPips"] == pytest.approx(100.0)
     assert m["rr"] == 2.0
     assert m["exitReason"] == "TP"
     assert isinstance(m["chartBuffer"], list)

@@ -19,6 +19,14 @@ function formatPrice(n: number): string {
   return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
+function formatPips(n: number): string {
+  if (!Number.isFinite(n)) return '—'
+  const rounded = Math.round(n)
+  // Most pip distances should be whole numbers; avoid noisy decimals in the common case.
+  if (Math.abs(n - rounded) < 1e-8) return String(rounded)
+  return n.toLocaleString('en-US', { maximumFractionDigits: 2 })
+}
+
 function formatRr(rr: number | null): string {
   if (rr == null) return '—'
   const sign = rr >= 0 ? '+' : ''
@@ -82,6 +90,7 @@ export function TradeHistoryTable({
                 <th>R:R</th>
                 <th>Entry Price</th>
                 <th>SL</th>
+                <th>SL pips</th>
                 <th>TP</th>
                 <th>Score</th>
               </>
@@ -128,6 +137,7 @@ export function TradeHistoryTable({
                   </td>
                   <td className="entry-price">{formatPrice(e.entryPrice)}</td>
                   <td className="sl-cell">{formatPrice(e.sl)}</td>
+                  <td className="sl-pips-cell">{formatPips(e.slPips)}</td>
                   <td className="tp-cell">{formatPrice(e.tp)}</td>
                   <td>
                     <span

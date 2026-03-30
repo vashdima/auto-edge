@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { LineSeries, createChart, type IChartApi, type UTCTimestamp } from 'lightweight-charts'
-import { downloadRunConfig, fetchRunStats } from '../api'
-import type { HourlyEntryStat, Run, RunStats } from '../types'
+import { downloadRunConfig, fetchEntries, fetchRunStats } from '../api'
+import type { EntryMap, HourlyEntryStat, Run, RunStats } from '../types'
 
 type MonteCarloMode = 'bootstrap' | 'shuffle'
 type HourlySortKey = 'hour' | 'trades' | 'wins' | 'losses' | 'breakevens' | 'winRate' | 'avgRR' | 'totalRR'
 type SortDirection = 'asc' | 'desc'
+type PipSortKey = 'pipInt' | 'winRate'
 
 interface RunDashboardPageProps {
   run: Run
@@ -124,11 +125,14 @@ function buildMonteCarloPercentiles(
 
 export function RunDashboardPage({ run, onBack }: RunDashboardPageProps) {
   const [stats, setStats] = useState<RunStats | null>(null)
+  const [entries, setEntries] = useState<EntryMap[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [mcMode, setMcMode] = useState<MonteCarloMode>('bootstrap')
   const [hourlySortKey, setHourlySortKey] = useState<HourlySortKey>('hour')
   const [hourlySortDirection, setHourlySortDirection] = useState<SortDirection>('asc')
+  const [pipSortKey, setPipSortKey] = useState<PipSortKey>('pipInt')
+  const [pipSortDirection, setPipSortDirection] = useState<SortDirection>('desc')
   const [configDownloadError, setConfigDownloadError] = useState<string | null>(null)
   const simCount = useMemo(() => {
     const n = stats?.rrSeries?.length ?? 0
@@ -140,10 +144,15 @@ export function RunDashboardPage({ run, onBack }: RunDashboardPageProps) {
     setLoading(true)
     setError(null)
     setStats(null)
-    fetchRunStats(run.run_key ? undefined : run.run_id, run.run_key ?? undefined)
-      .then((data) => {
+
+    const runId = run.run_key ? undefined : run.run_id
+    const runKey = run.run_key ?? undefined
+
+    Promise.all([fetchRunStats(runId, runKey), fetchEntries(runId, runKey, { summary: true })])
+      .then(([statsData, entriesData]) => {
         if (cancelled) return
-        setStats(data)
+        setStats(statsData)
+        setEntries(entriesData)
       })
       .catch((err) => {
         if (cancelled) return
@@ -245,6 +254,82 @@ export function RunDashboardPage({ run, onBack }: RunDashboardPageProps) {
   function getHourlySortIndicator(key: HourlySortKey): string {
     if (hourlySortKey !== key) return ''
     return hourlySortDirection === 'asc' ? ' ^' : ' v'
+  }
+
+  interface PipOutcomeRow {
+    pipInt: number
+    trades: number
+    wins: number
+    losses: number
+    breakevens: number
+    winRate: number
+  }
+
+  const pipOutcomes = useMemo<PipOutcomeRow[]>(() => {
+    const groups = new Map<number, Omit<PipOutcomeRow, 'winRate'>>()
+    for (const e of entries) {
+      if (!Number.isFinite(e.slPips)) continue
+      const pipInt = Math.round(e.slPips)
+      const reason = e.exitReason
+      // For the histogram we only care about W/L/BE; ignore anything else.
+      if (reason !== 'TP' && reason !== 'SL' && reason !== 'BE') continue
+
+      const cur = groups.get(pipInt) ?? {
+        pipInt,
+        trades: 0,
+        wins: 0,
+        losses: 0,
+        breakevens: 0,
+      }
+      cur.trades += 1
+      if (reason === 'TP') cur.wins += 1
+      if (reason === 'SL') cur.losses += 1
+      if (reason === 'BE') cur.breakevens += 1
+      groups.set(pipInt, cur)
+    }
+
+    const rows: PipOutcomeRow[] = []
+    for (const [, v] of groups.entries()) {
+      rows.push({
+        ...v,
+        winRate: v.trades > 0 ? v.wins / v.trades : 0,
+      })
+    }
+    return rows
+  }, [entries])
+
+  const sortedPipOutcomes = useMemo<PipOutcomeRow[]>(() => {
+    const rows = pipOutcomes.slice()
+    const dir = pipSortDirection === 'asc' ? 1 : -1
+    rows.sort((a, b) => {
+      let aValue = 0
+      let bValue = 0
+      if (pipSortKey === 'pipInt') {
+        aValue = a.pipInt
+        bValue = b.pipInt
+      } else {
+        aValue = a.winRate
+        bValue = b.winRate
+      }
+      if (aValue < bValue) return -1 * dir
+      if (aValue > bValue) return 1 * dir
+      return a.pipInt - b.pipInt
+    })
+    return rows
+  }, [pipOutcomes, pipSortKey, pipSortDirection])
+
+  function onPipHeaderClick(key: PipSortKey): void {
+    if (pipSortKey === key) {
+      setPipSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'))
+      return
+    }
+    setPipSortKey(key)
+    setPipSortDirection('desc')
+  }
+
+  function getPipSortIndicator(key: PipSortKey): string {
+    if (pipSortKey !== key) return ''
+    return pipSortDirection === 'asc' ? ' ^' : ' v'
   }
 
   useEffect(() => {
@@ -454,6 +539,63 @@ export function RunDashboardPage({ run, onBack }: RunDashboardPageProps) {
             <div className="dashboard-card">
               <h3>Drawdown Curve (R)</h3>
               {drawdownData.length === 0 ? <p style={{ color: '#666' }}>No data.</p> : <div ref={drawdownContainerRef} className="dashboard-chart-canvas" />}
+            </div>
+
+            <div className="dashboard-card">
+              <h3>SL Pips Outcomes</h3>
+              {sortedPipOutcomes.length === 0 ? (
+                <p style={{ color: '#666' }}>No data.</p>
+              ) : (
+                (() => {
+                  const maxTrades = Math.max(...sortedPipOutcomes.map((r) => r.trades), 1)
+                  return (
+                    <div className="hourly-table-wrap">
+                      <table className="hourly-table">
+                        <thead>
+                          <tr>
+                            <th>
+                              <button type="button" onClick={() => onPipHeaderClick('pipInt')}>
+                                SL pips{getPipSortIndicator('pipInt')}
+                              </button>
+                            </th>
+                            <th>Trades</th>
+                            <th>W</th>
+                            <th>L</th>
+                            <th>BE</th>
+                            <th>
+                              <button type="button" onClick={() => onPipHeaderClick('winRate')}>
+                                Win%{getPipSortIndicator('winRate')}
+                              </button>
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {sortedPipOutcomes.map((row) => {
+                            const widthPct = (row.trades / maxTrades) * 100
+                            return (
+                              <tr key={row.pipInt}>
+                                <td>{row.pipInt}</td>
+                                <td>
+                                  <div className="pip-hist-trades-cell">
+                                    <div className="pip-hist-bar-track">
+                                      <div className="pip-hist-bar-fill" style={{ width: `${widthPct}%` }} />
+                                    </div>
+                                    <span className="pip-hist-trades-count">{row.trades}</span>
+                                  </div>
+                                </td>
+                                <td>{row.wins}</td>
+                                <td>{row.losses}</td>
+                                <td>{row.breakevens}</td>
+                                <td>{fmt(row.winRate * 100, 1)}%</td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )
+                })()
+              )}
             </div>
           </div>
 

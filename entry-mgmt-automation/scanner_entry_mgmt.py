@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
 
 from mtf_loader import (
     get_db_path,
@@ -17,6 +18,7 @@ from mtf_loader import (
     init_b2_tables,
     load_aligned_for_scan,
     load_config,
+    resolve_config_path,
     resolve_scan_windows,
 )
 from scanner_entry_logic import (
@@ -29,6 +31,7 @@ from scanner_state_machine import candidate_trades_from_df, run_trade_to_complet
 
 
 def main(config_path: str | None = None) -> None:
+    config_yaml_snapshot = Path(resolve_config_path(config_path)).read_text(encoding="utf-8")
     config = load_config(config_path)
     run_cfg = config.get("run") or {}
     run_key = run_cfg.get("key")
@@ -151,7 +154,13 @@ def main(config_path: str | None = None) -> None:
     with sqlite3.connect(db_path) as conn:
         try:
             run_id = get_or_create_run_id(
-                conn, run_key, scan_from, scan_to, created_at, overwrite=overwrite
+                conn,
+                run_key,
+                scan_from,
+                scan_to,
+                created_at,
+                overwrite=overwrite,
+                config_yaml=config_yaml_snapshot,
             )
         except ValueError as e:
             print(f"B2.4: {e}")

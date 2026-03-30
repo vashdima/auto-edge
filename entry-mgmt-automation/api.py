@@ -3,6 +3,7 @@ C2: HTTP API for run selector, entry maps, and run-level stats.
 
 Exposes:
 - GET /runs (list runs for selector)
+- GET /run-config?run_id=... or run_key=... (YAML snapshot for that run)
 - GET /entries?run_id=... or run_key=... [&summary=1]
 - GET /trade-buffers?run_id=...&trade_ids=1,2,3
 - GET /run-stats?run_id=... or run_key=...
@@ -10,6 +11,7 @@ Exposes:
 
 from __future__ import annotations
 
+import math
 import os
 import sqlite3
 from datetime import datetime, timezone
@@ -18,13 +20,14 @@ from typing import Any, Callable, Optional
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
+from starlette.responses import Response
 
 from entry_maps import (
     build_entry_maps_for_run,
     build_entry_summaries_for_run,
     build_trade_buffers_for_run,
 )
-from mtf_loader import get_db_path, load_config
+from mtf_loader import ensure_scan_runs_config_yaml, get_db_path, load_config
 
 # In-memory cache: invalidate when SQLite file mtime changes.
 _entries_cache: dict[tuple, tuple[float, Any]] = {}
@@ -78,6 +81,39 @@ def _parse_utc_hour(iso_ts: Optional[str]) -> Optional[int]:
     return int(dt.hour)
 
 
+def _per_trade_risk_metrics(rr_series: list[float]) -> dict[str, Any]:
+    """Sharpe/Sortino-style ratios on per-trade R-multiples (not annualized)."""
+    n = len(rr_series)
+    if n == 0:
+        return {
+            "sharpePerTrade": None,
+            "sortinoPerTrade": None,
+            "profitFactor": None,
+            "stdDevR": None,
+        }
+    mean = sum(rr_series) / n
+    eps = 1e-12
+    if n >= 2:
+        var = sum((x - mean) ** 2 for x in rr_series) / (n - 1)
+        std = math.sqrt(var)
+    else:
+        std = 0.0
+    sharpe = (mean / std) if n >= 2 and std > eps else None
+    down_sq = sum(min(0.0, r) ** 2 for r in rr_series)
+    d = math.sqrt(down_sq / n)
+    sortino = (mean / d) if d > eps else None
+    sum_pos = sum(r for r in rr_series if r > 0)
+    sum_neg = sum(r for r in rr_series if r < 0)
+    profit_factor = (sum_pos / abs(sum_neg)) if sum_neg < -eps else None
+    std_dev_r = float(std) if n >= 2 else None
+    return {
+        "sharpePerTrade": sharpe,
+        "sortinoPerTrade": sortino,
+        "profitFactor": profit_factor,
+        "stdDevR": std_dev_r,
+    }
+
+
 def create_app(
     db_path: Optional[str] = None,
     config: Optional[dict[str, Any]] = None,
@@ -106,19 +142,52 @@ def create_app(
 
     @app.get("/runs")
     def list_runs() -> list[dict[str, Any]]:
-        """Return all runs (run_id, run_key, scan_from, scan_to, created_at), newest first."""
+        """Return all runs (run_id, run_key, scan_from, scan_to, created_at, has_config), newest first."""
         path = app.state.db_path
         try:
             with sqlite3.connect(path) as conn:
+                ensure_scan_runs_config_yaml(conn)
                 conn.row_factory = sqlite3.Row
                 cur = conn.execute(
-                    """SELECT run_id, run_key, scan_from, scan_to, created_at
+                    """SELECT run_id, run_key, scan_from, scan_to, created_at,
+                              CASE WHEN config_yaml IS NOT NULL AND config_yaml != '' THEN 1 ELSE 0 END AS has_config
                        FROM scan_runs ORDER BY run_id DESC"""
                 )
                 rows = cur.fetchall()
-                return [dict(row) for row in rows]
+                out: list[dict[str, Any]] = []
+                for row in rows:
+                    d = dict(row)
+                    d["has_config"] = bool(d.get("has_config"))
+                    out.append(d)
+                return out
         except sqlite3.OperationalError:
             return []
+
+    @app.get("/run-config")
+    def get_run_config(
+        run_id: Optional[int] = Query(None, description="Run ID"),
+        run_key: Optional[str] = Query(None, description="Run key"),
+    ) -> Response:
+        """Return stored config.yaml snapshot for the run as downloadable YAML."""
+        path = app.state.db_path
+        with sqlite3.connect(path) as conn:
+            ensure_scan_runs_config_yaml(conn)
+            resolved_run_id = _resolve_run_id_or_404(conn, run_id, run_key)
+            cur = conn.execute(
+                "SELECT config_yaml FROM scan_runs WHERE run_id = ?",
+                (resolved_run_id,),
+            )
+            row = cur.fetchone()
+        raw = row[0] if row else None
+        if not raw:
+            raise HTTPException(status_code=404, detail="No config snapshot for this run")
+        return Response(
+            content=raw,
+            media_type="text/yaml; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="config-run-{resolved_run_id}.yaml"'
+            },
+        )
 
     @app.get("/entries")
     def get_entries(
@@ -305,6 +374,8 @@ def create_app(
             bucket["winRate"] = (wins_h / trades * 100.0) if trades > 0 else 0.0
             bucket["avgRR"] = (total_rr_h / trades) if trades > 0 else 0.0
 
+        risk_adjusted = _per_trade_risk_metrics(rr_series)
+
         return {
             "run_id": resolved_run_id,
             "summary": {
@@ -324,6 +395,7 @@ def create_app(
                 "maxWinningStreak": max_winning_streak,
                 "maxLosingStreak": max_losing_streak,
             },
+            "riskAdjusted": risk_adjusted,
             "equityCurve": equity_curve,
             "rrSeries": rr_series,
             "hourlyByEntryUtc": hourly_stats,

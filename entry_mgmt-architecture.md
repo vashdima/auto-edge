@@ -82,3 +82,5 @@ Before considering a change to `entry_mgmt.pine` complete:
    - Added, removed, or changed **key persistent vars** or what gets reset → update the "Key persistent vars" table.
    - Added a **new line/label type** (e.g. TP2) → update "Line/label lifecycle" and any "four levels" wording.
 3. **Update [.cursor/rules/entry-mgmt.mdc](.cursor/rules/entry-mgmt.mdc)** if you introduced a new convention or invariant that should apply to future edits (e.g. new state, new "always do X" pattern).
+
+**Live trading (Python / automation):** [live-trading-architecture.md](live-trading-architecture.md) — same YAML shape as backtest, `liveTradingEnabled`, per-ticker configs, rollout stages.

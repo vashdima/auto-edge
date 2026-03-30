@@ -4,6 +4,8 @@ export interface Run {
   scan_from: string
   scan_to: string
   created_at: string
+  /** True when this run has a stored config.yaml snapshot (from the scanner). */
+  has_config?: boolean
 }
 
 export interface ChartBar {
@@ -65,6 +67,14 @@ export interface RunStatsStreaks {
   maxLosingStreak: number
 }
 
+/** Per-trade R-multiple ratios from GET /run-stats (not annualized). */
+export interface RunStatsRiskAdjusted {
+  sharpePerTrade: number | null
+  sortinoPerTrade: number | null
+  profitFactor: number | null
+  stdDevR: number | null
+}
+
 export interface HourlyEntryStat {
   hour: number
   trades: number
@@ -90,6 +100,7 @@ export interface RunStats {
   summary: RunStatsSummary
   drawdown: RunStatsDrawdown
   streaks: RunStatsStreaks
+  riskAdjusted: RunStatsRiskAdjusted
   equityCurve: EquityPoint[]
   rrSeries: number[]
   hourlyByEntryUtc: HourlyEntryStat[]

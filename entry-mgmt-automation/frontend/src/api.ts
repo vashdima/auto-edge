@@ -51,6 +51,35 @@ export async function fetchTradeBuffers(
   return res.json()
 }
 
+export async function downloadRunConfig(run: Run): Promise<void> {
+  if (run.run_id == null && run.run_key == null) {
+    throw new Error('Invalid run')
+  }
+  const params = new URLSearchParams()
+  if (run.run_key != null && run.run_key !== '') {
+    params.set('run_key', run.run_key)
+  } else {
+    params.set('run_id', String(run.run_id))
+  }
+  const res = await fetch(`${API_BASE}/run-config?${params}`)
+  if (!res.ok) {
+    if (res.status === 404) {
+      throw new Error('No config snapshot for this run')
+    }
+    throw new Error(`Failed to download config: ${res.status}`)
+  }
+  const text = await res.text()
+  const blob = new Blob([text], { type: 'text/yaml;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `config-run-${run.run_id}.yaml`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
 export async function fetchRunStats(runId?: number, runKey?: string): Promise<RunStats> {
   if (runId == null && runKey == null) {
     throw new Error('Provide runId or runKey')

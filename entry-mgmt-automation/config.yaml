@@ -10,15 +10,15 @@ scan:
 
 # --- Run (B2.4: named run; same key overwrites prior raw_trades) ---
 run:
-  key: "usd_jpy_2020_test"
+  key: "aud_usd_5m_20-26_test_v2"
   overwrite: true
 
 # --- Timeframes (entry = chart TF; context = HTF trend; validation = validation TF) ---
 # Oanda granularity mapping: M1, M5, M15, M30, H1, H4, D, W
 timeframes:
-  entry:     "H1"   # chart TF (Pine: chart period; here set explicitly)
-  validation: "D"    # Pine: validationTF "Validation timeframe"
-  context:   "W"     # Pine: htfTrendTF "Trend timeframe (Context)"
+  entry:     "M5"   # chart TF (Pine: chart period; here set explicitly)
+  validation: "H1"    # Pine: validationTF "Validation timeframe"
+  context:   "D"     # Pine: htfTrendTF "Trend timeframe (Context)"
 
 # --- Entry Detection (Pine: lines 6-10) ---
 entry_detection:
@@ -29,9 +29,9 @@ entry_detection:
   maxCandlesAfterPause: 20  # Cancel PENDING if price does not cross entry within this many bars
   maxDistanceFromEMA:  2.0 # Pine default 2.0, min 0.1 step 0.1 (ATR multiples)
   contextReEnabled: true      # RE context regime gate; disabled keeps legacy behavior
-  contextReAtrMultiplier: 1.4  # Trigger threshold for (ctx_high - ctx_low) / ctx_atr
-  validationReEnabled: false  # RE validation regime gate; disabled keeps legacy behavior
-  validationReAtrMultiplier: 1.4  # Trigger threshold for (val_high - val_low) / val_atr
+  contextReAtrMultiplier: 1.3  # Trigger threshold for (ctx_high - ctx_low) / ctx_atr
+  validationReEnabled: true  # RE validation regime gate; disabled keeps legacy behavior
+  validationReAtrMultiplier: 1.3  # Trigger threshold for (val_high - val_low) / val_atr
   # Enrich score range (optional): only allow entry when enrich_score is in [min, max] (inclusive). Omit both to disable.
   # enrichScoreMin: 2
   # enrichScoreMax: 20
@@ -39,19 +39,19 @@ entry_detection:
 # --- Risk Management (Pine: lines 20-23) ---
 risk_management:
   atrPeriod:     14   # Pine default 14, min 1
-  atrMultiplier: 0.5  # Pine default 1.5, min 0.1 step 0.1 (SL = entry - atr * this)
+  atrMultiplier: 1.0  # Pine default 1.5, min 0.1 step 0.1 (SL = entry - atr * this)
   rrBreakEven:   1.5  # Pine default 1.0, min 0.1 step 0.1 (R:R to trigger BE)
   rrTakeProfit:  4.0  # Pine default 4.0, min 0.1 step 0.1 (R:R for TP)
 
 # --- MTF fetch (Oanda): parallelize symbols; each symbol fetches entry/context/validation in parallel ---
 # Higher values speed up multi-symbol runs but may trigger Oanda rate limits (429); client retries 429 with backoff.
 mtf_fetch:
-  max_symbol_workers: 2   # default 1 (symbols sequential); try 2–8 if you have many symbols
+  max_symbol_workers: 1   # default 1 (symbols sequential); try 2–8 if you have many symbols
 
 # --- Optional: symbols to scan (if not provided, a default list may be used) ---
 symbols:
   # - "XAU_USD"
-  - "USD_JPY"
+  # - "USD_JPY"
   # - "EUR_USD"
-  # - "AUD_USD"
+  - "AUD_USD"
   # - "GBP_AUD"

@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import sys
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -84,11 +87,17 @@ def _aligned_candles_columns_with_indicators(conn: sqlite3.Connection) -> tuple[
     return (select_cols, result_cols)
 
 
+def resolve_config_path(config_path: str | None = None) -> str:
+    """Same path resolution as load_config (default _DIR/config.yaml)."""
+    if config_path is None:
+        return os.path.join(_DIR, "config.yaml")
+    return config_path
+
+
 def load_config(config_path: str | None = None) -> dict[str, Any]:
     """Load config YAML from path or default _DIR/config.yaml."""
-    if config_path is None:
-        config_path = os.path.join(_DIR, "config.yaml")
-    with open(config_path) as f:
+    path = resolve_config_path(config_path)
+    with open(path) as f:
         return yaml.safe_load(f)
 
 
@@ -230,6 +239,15 @@ def ensure_scan_runs_run_key(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def ensure_scan_runs_config_yaml(conn: sqlite3.Connection) -> None:
+    """Add config_yaml column (per-run snapshot of config file) if missing."""
+    cur = conn.execute("PRAGMA table_info(scan_runs)")
+    columns = {row[1] for row in cur.fetchall()}
+    if "config_yaml" not in columns:
+        conn.execute("ALTER TABLE scan_runs ADD COLUMN config_yaml TEXT")
+    conn.commit()
+
+
 def get_or_create_run_id(
     conn: sqlite3.Connection,
     run_key: str,
@@ -237,6 +255,7 @@ def get_or_create_run_id(
     scan_to: str,
     created_at: str,
     overwrite: bool = True,
+    config_yaml: str | None = None,
 ) -> int:
     """
     Return run_id for the given run_key. If run_key exists: reuse run_id, and if overwrite
@@ -256,14 +275,14 @@ def get_or_create_run_id(
                 )
             conn.execute("DELETE FROM raw_trades WHERE run_id = ?", (run_id,))
             conn.execute(
-                "UPDATE scan_runs SET scan_from = ?, scan_to = ?, created_at = ? WHERE run_id = ?",
-                (scan_from, scan_to, created_at, run_id),
+                "UPDATE scan_runs SET scan_from = ?, scan_to = ?, created_at = ?, config_yaml = ? WHERE run_id = ?",
+                (scan_from, scan_to, created_at, config_yaml, run_id),
             )
             conn.commit()
             return run_id
         cur = conn.execute(
-            "INSERT INTO scan_runs (run_key, scan_from, scan_to, created_at) VALUES (?, ?, ?, ?)",
-            (run_key, scan_from, scan_to, created_at),
+            "INSERT INTO scan_runs (run_key, scan_from, scan_to, created_at, config_yaml) VALUES (?, ?, ?, ?, ?)",
+            (run_key, scan_from, scan_to, created_at, config_yaml),
         )
         run_id = cur.lastrowid
         conn.commit()
@@ -279,6 +298,7 @@ def init_b2_tables(conn: sqlite3.Connection) -> None:
     _init_raw_trades_table(conn)
     ensure_raw_trades_exit_time(conn)
     ensure_scan_runs_run_key(conn)
+    ensure_scan_runs_config_yaml(conn)
 
 
 def _ensure_indicator_columns(conn: sqlite3.Connection) -> None:
@@ -707,6 +727,7 @@ def _fetch_three_timeframes_parallel(
     to_ts: datetime,
     *,
     client_factory: Callable[[], Any] | None = None,
+    candle_chunk_progress: Callable[[str, str, int, int], None] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Fetch chart, context, validation candles concurrently (one OandaClient per thread).
@@ -725,7 +746,12 @@ def _fetch_three_timeframes_parallel(
 
     def _fetch_one(spec: tuple[str, datetime]) -> pd.DataFrame:
         gran, from_t = spec
-        return _make_client().fetch_candles(instrument, gran, from_t, to_ts)
+        client = _make_client()
+        if candle_chunk_progress is not None:
+            return client.fetch_candles(
+                instrument, gran, from_t, to_ts, on_chunk=candle_chunk_progress
+            )
+        return client.fetch_candles(instrument, gran, from_t, to_ts)
 
     with ThreadPoolExecutor(max_workers=3) as pool:
         futures = [pool.submit(_fetch_one, s) for s in specs]
@@ -744,6 +770,7 @@ def _fetch_and_align_one_symbol(
     to_ts: datetime,
     *,
     client_factory: Callable[[], Any] | None = None,
+    candle_chunk_progress: Callable[[str, str, int, int], None] | None = None,
 ) -> pd.DataFrame:
     chart_df, context_df, validation_df = _fetch_three_timeframes_parallel(
         instrument,
@@ -755,13 +782,18 @@ def _fetch_and_align_one_symbol(
         fetch_from_validation,
         to_ts,
         client_factory=client_factory,
+        candle_chunk_progress=candle_chunk_progress,
     )
     if chart_df.empty:
         return pd.DataFrame(columns=_ALIGNED_COLUMNS)
     return _align_current_bar_running_ohlc(chart_df, context_df, validation_df)
 
 
-def load_aligned(config_path: str | None = None) -> dict[str, pd.DataFrame]:
+def load_aligned(
+    config_path: str | None = None,
+    *,
+    progress: bool = True,
+) -> dict[str, pd.DataFrame]:
     """
     Load config, fetch chart/context/validation for each symbol with buffer,
     align (current bar + running OHLC), write to SQLite aligned_candles, return dict[symbol, aligned_df].
@@ -770,6 +802,9 @@ def load_aligned(config_path: str | None = None) -> dict[str, pd.DataFrame]:
     ctx_time, ctx_open, ctx_high, ctx_low, ctx_close, ctx_volume,
     val_time, val_open, val_high, val_low, val_close, val_volume.
     All times UTC. Sorted by time. Buffer rows are included; Phase B filters scan window (from <= time <= to).
+
+    If progress is True, prints a short header, per-symbol status, and Oanda pagination
+    lines (per HTTP page per timeframe) to stderr (flushed).
     """
     config = load_config(config_path)
     timeframes = config["timeframes"]
@@ -791,10 +826,41 @@ def load_aligned(config_path: str | None = None) -> dict[str, pd.DataFrame]:
 
     max_symbol_workers = _resolve_mtf_fetch_max_symbol_workers(config)
     result: dict[str, pd.DataFrame] = {s: pd.DataFrame(columns=_ALIGNED_COLUMNS) for s in symbols}
+    n_sym = len(symbols)
+
+    if progress and n_sym:
+        print(
+            f"mtf load: {n_sym} symbol(s), workers={max_symbol_workers}, "
+            f"TFs entry={chart_tf} context={context_tf} validation={validation_tf}, "
+            f"chart range {fetch_from_chart.isoformat()} → {to_ts.isoformat()}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    chunk_lock = threading.Lock()
+    candle_chunk_progress: Callable[[str, str, int, int], None] | None = None
+    if progress:
+
+        def _candle_chunk_progress(inst: str, gran: str, page: int, rows: int) -> None:
+            with chunk_lock:
+                print(
+                    f"mtf load {inst} {gran}: page {page}, {rows} candles",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+        candle_chunk_progress = _candle_chunk_progress
 
     try:
         if max_symbol_workers == 1:
-            for instrument in symbols:
+            for i, instrument in enumerate(symbols):
+                if progress:
+                    print(
+                        f"mtf load [{i + 1}/{n_sym}] {instrument}: fetching…",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                t0 = time.perf_counter()
                 aligned = _fetch_and_align_one_symbol(
                     instrument,
                     chart_tf,
@@ -804,11 +870,26 @@ def load_aligned(config_path: str | None = None) -> dict[str, pd.DataFrame]:
                     fetch_from_context,
                     fetch_from_validation,
                     to_ts,
+                    candle_chunk_progress=candle_chunk_progress,
                 )
                 result[instrument] = aligned
                 if not aligned.empty:
                     _write_aligned_to_db(conn, instrument, chart_tf, aligned)
+                if progress:
+                    dt = time.perf_counter() - t0
+                    print(
+                        f"mtf load [{i + 1}/{n_sym}] {instrument}: done ({len(aligned)} rows, {dt:.1f}s)",
+                        file=sys.stderr,
+                        flush=True,
+                    )
         else:
+            if progress:
+                for i, instrument in enumerate(symbols):
+                    print(
+                        f"mtf load [{i + 1}/{n_sym}] {instrument}: fetching…",
+                        file=sys.stderr,
+                        flush=True,
+                    )
             with ThreadPoolExecutor(max_workers=max_symbol_workers) as pool:
                 future_to_symbol = {
                     pool.submit(
@@ -821,13 +902,26 @@ def load_aligned(config_path: str | None = None) -> dict[str, pd.DataFrame]:
                         fetch_from_context,
                         fetch_from_validation,
                         to_ts,
+                        candle_chunk_progress=candle_chunk_progress,
                     ): instrument
                     for instrument in symbols
                 }
                 by_symbol: dict[str, pd.DataFrame] = {}
+                done_lock = threading.Lock()
+                done_count = 0
                 for fut in as_completed(future_to_symbol):
                     inst = future_to_symbol[fut]
-                    by_symbol[inst] = fut.result()
+                    aligned = fut.result()
+                    by_symbol[inst] = aligned
+                    if progress:
+                        with done_lock:
+                            done_count += 1
+                            k = done_count
+                        print(
+                            f"mtf load [{k}/{n_sym}] {inst}: done ({len(aligned)} rows)",
+                            file=sys.stderr,
+                            flush=True,
+                        )
             for instrument in symbols:
                 aligned = by_symbol[instrument]
                 result[instrument] = aligned
@@ -840,7 +934,7 @@ def load_aligned(config_path: str | None = None) -> dict[str, pd.DataFrame]:
 
 
 if __name__ == "__main__":
-    aligned = load_aligned()
+    aligned = load_aligned(progress=True)
     print("Aligned data (buffer rows included; Phase B filters scan window):")
     for symbol, df in aligned.items():
         print(f"  {symbol}: {len(df)} rows, columns: {list(df.columns)}")

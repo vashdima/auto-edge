@@ -606,16 +606,21 @@ def test_get_or_create_run_id_new_key_creates_run():
     try:
         conn = sqlite3.connect(db_path)
         init_b2_tables(conn)
+        snap = "symbols:\n  - EUR_USD\n"
         run_id = get_or_create_run_id(
             conn, "my_run_v1", "2024-01-01T00:00:00Z", "2024-06-30T23:59:59Z",
-            "2024-02-13T12:00:00.000000Z", overwrite=True
+            "2024-02-13T12:00:00.000000Z", overwrite=True, config_yaml=snap,
         )
         conn.close()
         assert run_id == 1
         conn2 = sqlite3.connect(db_path)
-        row = conn2.execute("SELECT run_id, run_key, scan_from, scan_to FROM scan_runs WHERE run_id = ?", (run_id,)).fetchone()
+        row = conn2.execute(
+            "SELECT run_id, run_key, scan_from, scan_to, config_yaml FROM scan_runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
         conn2.close()
         assert row[0] == 1 and row[1] == "my_run_v1"
+        assert row[4] == snap
     finally:
         os.unlink(db_path)
 
@@ -638,18 +643,23 @@ def test_get_or_create_run_id_existing_key_overwrites_trades():
         conn.commit()
         n_before = conn.execute("SELECT COUNT(*) FROM raw_trades WHERE run_id = ?", (run_id1,)).fetchone()[0]
         assert n_before == 1
+        snap2 = "run:\n  key: v2\n"
         run_id2 = get_or_create_run_id(
             conn, "same_key", "2024-01-01T00:00:00Z", "2024-06-30T23:59:59Z",
-            "2024-02-13T12:00:00.000000Z", overwrite=True
+            "2024-02-13T12:00:00.000000Z", overwrite=True, config_yaml=snap2,
         )
         conn.close()
         assert run_id2 == run_id1
         conn2 = sqlite3.connect(db_path)
         n_after = conn2.execute("SELECT COUNT(*) FROM raw_trades WHERE run_id = ?", (run_id1,)).fetchone()[0]
-        row = conn2.execute("SELECT created_at FROM scan_runs WHERE run_id = ?", (run_id1,)).fetchone()
+        row = conn2.execute(
+            "SELECT created_at, config_yaml FROM scan_runs WHERE run_id = ?",
+            (run_id1,),
+        ).fetchone()
         conn2.close()
         assert n_after == 0
         assert row[0] == "2024-02-13T12:00:00.000000Z"
+        assert row[1] == snap2
     finally:
         os.unlink(db_path)
 
@@ -887,7 +897,7 @@ symbols:
 """.strip()
         )
     try:
-        out = load_aligned(config_path=config_path)
+        out = load_aligned(config_path=config_path, progress=False)
         assert "EUR_USD" in out
         # one symbol * three timeframes = 3 fetches total (not multiplied by windows)
         assert len(calls) == 3
@@ -953,7 +963,7 @@ symbols:
 """.strip()
         )
     try:
-        out = load_aligned(config_path=config_path)
+        out = load_aligned(config_path=config_path, progress=False)
         assert set(out.keys()) == {"EUR_USD", "GBP_USD"}
         assert len(calls) == 6
         for sym in ("EUR_USD", "GBP_USD"):
@@ -973,7 +983,7 @@ def test_load_aligned_integration():
     """Integration: load_aligned returns non-empty dict, writes to SQLite, expected columns."""
     from mtf_loader import get_db_path, load_aligned
 
-    aligned = load_aligned()
+    aligned = load_aligned(progress=False)
     assert isinstance(aligned, dict)
     assert len(aligned) >= 1  # at least one symbol from config
     total_rows = 0

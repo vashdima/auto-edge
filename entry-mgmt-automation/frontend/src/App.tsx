@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { fetchEntries, fetchRuns, fetchTradeBuffers, type TradeBuffersPatch } from './api'
+import { downloadRunConfig, fetchEntries, fetchRuns, fetchTradeBuffers, type TradeBuffersPatch } from './api'
 import type { EntryMap, Run } from './types'
 import { EntryCandlesChart } from './components/EntryCandlesChart'
 import { ContextCandlesChart } from './components/ContextCandlesChart'
@@ -55,6 +55,7 @@ export function App() {
   const [loadingRuns, setLoadingRuns] = useState(true)
   const [loadingEntries, setLoadingEntries] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [configDownloadError, setConfigDownloadError] = useState<string | null>(null)
   const bufferLoadedIdsRef = useRef<Set<number>>(new Set())
 
   const fetchEntriesForRun = useCallback((run: Run) => {
@@ -129,6 +130,11 @@ export function App() {
     highlightedIndex != null && entries[highlightedIndex] != null
       ? entries[highlightedIndex]!.trade_id
       : null
+
+  useEffect(() => {
+    if (entries.length === 0 || highlightedIndex != null) return
+    setHighlightedIndex(0)
+  }, [entries, highlightedIndex])
 
   useEffect(() => {
     if (selectedRun == null || highlightedTradeId == null) return
@@ -246,9 +252,34 @@ export function App() {
           >
             Open Dashboard
           </button>
+          <button
+            type="button"
+            className="btn-export"
+            disabled={
+              selectedRun == null ||
+              (selectedRun.has_config !== undefined && selectedRun.has_config === false)
+            }
+            title={
+              selectedRun != null && selectedRun.has_config === false
+                ? 'This run has no stored config (created before snapshots were saved)'
+                : 'Download config.yaml used for this run'
+            }
+            onClick={() => {
+              if (selectedRun == null) return
+              setConfigDownloadError(null)
+              downloadRunConfig(selectedRun).catch((err) =>
+                setConfigDownloadError(String((err as Error).message)),
+              )
+            }}
+          >
+            Download config
+          </button>
         </div>
         {error && (
           <p style={{ color: '#c62828', marginBottom: '0.5rem', marginTop: 0 }}>{error}</p>
+        )}
+        {configDownloadError && (
+          <p style={{ color: '#c62828', marginBottom: '0.5rem', marginTop: 0 }}>{configDownloadError}</p>
         )}
         {loadingEntries && (
           <p style={{ color: '#666', marginBottom: '0.5rem', marginTop: 0 }}>Loading entries…</p>

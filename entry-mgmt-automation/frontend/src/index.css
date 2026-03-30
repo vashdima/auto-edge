@@ -263,9 +263,9 @@ body {
 
 .dashboard-kpi-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 1rem;
-  align-items: start;
+  align-items: stretch;
   margin-bottom: 1rem;
 }
 
@@ -427,10 +427,6 @@ body {
 }
 
 @media (max-width: 1100px) {
-  .dashboard-kpi-grid {
-    grid-template-columns: 1fr;
-  }
-
   .dashboard-2col-grid {
     grid-template-columns: 1fr;
   }

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { LineSeries, createChart, type IChartApi, type UTCTimestamp } from 'lightweight-charts'
-import { fetchRunStats } from '../api'
+import { downloadRunConfig, fetchRunStats } from '../api'
 import type { HourlyEntryStat, Run, RunStats } from '../types'
 
 type MonteCarloMode = 'bootstrap' | 'shuffle'
@@ -14,6 +14,11 @@ interface RunDashboardPageProps {
 
 function fmt(n: number, digits = 2): string {
   return Number.isFinite(n) ? n.toFixed(digits) : '0.00'
+}
+
+function fmtOrDash(value: number | null | undefined, digits: number): string {
+  if (value == null || !Number.isFinite(value)) return '—'
+  return value.toFixed(digits)
 }
 
 function toUnixSeconds(iso: string, fallback: number): number {
@@ -124,6 +129,7 @@ export function RunDashboardPage({ run, onBack }: RunDashboardPageProps) {
   const [mcMode, setMcMode] = useState<MonteCarloMode>('bootstrap')
   const [hourlySortKey, setHourlySortKey] = useState<HourlySortKey>('hour')
   const [hourlySortDirection, setHourlySortDirection] = useState<SortDirection>('asc')
+  const [configDownloadError, setConfigDownloadError] = useState<string | null>(null)
   const simCount = useMemo(() => {
     const n = stats?.rrSeries?.length ?? 0
     return n > 150 ? 200 : 500
@@ -381,15 +387,41 @@ export function RunDashboardPage({ run, onBack }: RunDashboardPageProps) {
             Back to run
           </button>
           <h2 style={{ margin: 0 }}>Run Dashboard: {runLabel}</h2>
+          <button
+            type="button"
+            className="btn-export"
+            disabled={run.has_config !== undefined && run.has_config === false}
+            title={
+              run.has_config === false
+                ? 'This run has no stored config (created before snapshots were saved)'
+                : 'Download config.yaml used for this run'
+            }
+            onClick={() => {
+              setConfigDownloadError(null)
+              downloadRunConfig(run).catch((err) => setConfigDownloadError(String((err as Error).message)))
+            }}
+          >
+            Download config
+          </button>
         </div>
       </header>
 
       {loading && <p style={{ color: '#666' }}>Loading run stats…</p>}
       {error && <p style={{ color: '#c62828' }}>{error}</p>}
+      {configDownloadError && <p style={{ color: '#c62828' }}>{configDownloadError}</p>}
 
       {!loading && !error && stats && (
         <>
           <section className="dashboard-kpi-grid">
+          <div className="dashboard-card">
+            <h3>Risk-adjusted (per trade)</h3>
+            <p>Sharpe (per trade): {fmtOrDash(stats.riskAdjusted.sharpePerTrade, 3)}</p>
+            <p>Sortino (per trade): {fmtOrDash(stats.riskAdjusted.sortinoPerTrade, 3)}</p>
+            <p>Profit factor: {fmtOrDash(stats.riskAdjusted.profitFactor, 3)}</p>
+            <p>σ (R): {fmtOrDash(stats.riskAdjusted.stdDevR, 3)}</p>
+            <p className="dashboard-note">Per-trade μ/σ on R-multiples; not annualized.</p>
+          </div>
+
           <div className="dashboard-card">
             <h3>Summary</h3>
             <p>Total trades: {stats.summary.totalTrades}</p>

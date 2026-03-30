@@ -11,7 +11,7 @@ import os
 import re
 import time as _time
 from datetime import datetime, timezone, timedelta
-from typing import Union
+from typing import Callable, Union
 
 import pandas as pd
 import requests
@@ -144,6 +144,7 @@ class OandaClient:
         to_time: Union[datetime, str],
         *,
         pagination_delay_seconds: float = 0.1,
+        on_chunk: Callable[[str, str, int, int], None] | None = None,
     ) -> pd.DataFrame:
         """
         Fetch OHLC candles for the given instrument and range.
@@ -158,6 +159,8 @@ class OandaClient:
             from_time: start (datetime or ISO 8601 string, UTC)
             to_time: end (datetime or ISO 8601 string, UTC)
             pagination_delay_seconds: delay between paginated requests (default 0.1)
+            on_chunk: if set, called after each HTTP page with
+                (instrument, granularity, page_index_1based, cumulative_row_count).
         """
         if granularity not in VALID_GRANULARITIES:
             raise OandaClientError(
@@ -180,8 +183,10 @@ class OandaClient:
 
         all_rows: list[dict] = []
         current_from = from_ts
+        page_idx = 0
 
         while current_from < to_ts:
+            page_idx += 1
             # Request at most MAX_CANDLES_PER_REQUEST bars so Oanda does not reject
             chunk_end = min(
                 current_from + MAX_CANDLES_PER_REQUEST * delta,
@@ -219,6 +224,9 @@ class OandaClient:
             for c in candles:
                 if "mid" in c:
                     all_rows.append(_parse_candle(c))
+
+            if on_chunk is not None:
+                on_chunk(instrument, granularity, page_idx, len(all_rows))
 
             if not candles:
                 break

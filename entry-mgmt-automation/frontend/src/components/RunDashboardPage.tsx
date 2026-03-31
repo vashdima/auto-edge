@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { LineSeries, createChart, type IChartApi, type UTCTimestamp } from 'lightweight-charts'
 import { downloadRunConfig, fetchEntries, fetchRunStats } from '../api'
 import type { EntryMap, HourlyEntryStat, Run, RunStats } from '../types'
+import { SymbolMultiSelect } from './SymbolMultiSelect'
 
 type MonteCarloMode = 'bootstrap' | 'shuffle'
 type HourlySortKey = 'hour' | 'trades' | 'wins' | 'losses' | 'breakevens' | 'winRate' | 'avgRR' | 'totalRR'
@@ -78,6 +79,154 @@ function heatmapCellColor(avgRR: number, hasTrades: boolean): string {
   return '#eceff1'
 }
 
+function normalizeRr(e: EntryMap): number {
+  if (e.rr != null && Number.isFinite(e.rr)) return e.rr
+  if (String(e.exitReason).toUpperCase() === 'BE') return 0
+  return 0
+}
+
+function computeStatsFromEntries(entries: EntryMap[], runIdForSeed: number): RunStats {
+  const rows = entries
+    .slice()
+    .sort((a, b) => {
+      const ta = Date.parse(a.exitTime ?? a.entryTime)
+      const tb = Date.parse(b.exitTime ?? b.entryTime)
+      return (Number.isFinite(ta) ? ta : 0) - (Number.isFinite(tb) ? tb : 0)
+    })
+
+  const totalTrades = rows.length
+  let wins = 0
+  let losses = 0
+  let breakevens = 0
+  let totalRR = 0
+
+  const rrSeries: number[] = []
+  const equityCurve: RunStats['equityCurve'] = []
+
+  let equity = 0
+  let peak = 0
+  let maxDrawdown = 0
+  let maxWinningStreak = 0
+  let maxLosingStreak = 0
+  let curWinningStreak = 0
+  let curLosingStreak = 0
+
+  const hourlyByEntryUtc: RunStats['hourlyByEntryUtc'] = Array.from({ length: 24 }, (_, hour) => ({
+    hour,
+    trades: 0,
+    wins: 0,
+    losses: 0,
+    breakevens: 0,
+    winRate: 0,
+    avgRR: 0,
+    totalRR: 0,
+  }))
+
+  for (let i = 0; i < rows.length; i += 1) {
+    const e = rows[i]!
+    const rr = normalizeRr(e)
+    const reason = String(e.exitReason).toUpperCase()
+
+    if (reason === 'TP') wins += 1
+    else if (reason === 'SL') losses += 1
+    else breakevens += 1
+
+    totalRR += rr
+    rrSeries.push(rr)
+
+    // Streaks: BE/flat breaks both streaks.
+    if (rr > 0) {
+      curWinningStreak += 1
+      curLosingStreak = 0
+    } else if (rr < 0) {
+      curLosingStreak += 1
+      curWinningStreak = 0
+    } else {
+      curWinningStreak = 0
+      curLosingStreak = 0
+    }
+    maxWinningStreak = Math.max(maxWinningStreak, curWinningStreak)
+    maxLosingStreak = Math.max(maxLosingStreak, curLosingStreak)
+
+    equity += rr
+    peak = Math.max(peak, equity)
+    const drawdown = peak - equity
+    maxDrawdown = Math.max(maxDrawdown, drawdown)
+
+    const time = e.exitTime ?? e.entryTime
+    equityCurve.push({
+      index: i + 1,
+      time,
+      rr,
+      equity,
+      drawdown,
+      exitReason: e.exitReason,
+    })
+
+    const entryHour = (() => {
+      const ms = Date.parse(e.entryTime)
+      if (!Number.isFinite(ms)) return null
+      const d = new Date(ms)
+      return d.getUTCHours()
+    })()
+    if (entryHour != null) {
+      const bucket = hourlyByEntryUtc[entryHour]!
+      bucket.trades += 1
+      bucket.totalRR += rr
+      if (reason === 'TP') bucket.wins += 1
+      else if (reason === 'SL') bucket.losses += 1
+      else bucket.breakevens += 1
+    }
+  }
+
+  for (const bucket of hourlyByEntryUtc) {
+    const trades = bucket.trades
+    bucket.winRate = trades > 0 ? (bucket.wins / trades) * 100 : 0
+    bucket.avgRR = trades > 0 ? bucket.totalRR / trades : 0
+  }
+
+  const winRate = totalTrades > 0 ? (wins / totalTrades) * 100 : 0
+  const avgRR = totalTrades > 0 ? totalRR / totalTrades : 0
+
+  // Compute risk-adjusted metrics locally (same formulas as backend, per-trade, not annualized).
+  const mean = totalTrades > 0 ? totalRR / totalTrades : 0
+  let std = 0
+  if (totalTrades >= 2) {
+    const varSample =
+      rrSeries.reduce((sum, x) => sum + (x - mean) * (x - mean), 0) / (totalTrades - 1)
+    std = Math.sqrt(varSample)
+  }
+  const eps = 1e-12
+  const sharpePerTrade = totalTrades >= 2 && std > eps ? mean / std : null
+  const downSq = rrSeries.reduce((sum, r) => sum + Math.min(0, r) ** 2, 0)
+  const downDev = totalTrades > 0 ? Math.sqrt(downSq / totalTrades) : 0
+  const sortinoPerTrade = downDev > eps ? mean / downDev : null
+  const sumPos = rrSeries.reduce((sum, r) => sum + (r > 0 ? r : 0), 0)
+  const sumNeg = rrSeries.reduce((sum, r) => sum + (r < 0 ? r : 0), 0)
+  const profitFactor = sumNeg < -eps ? sumPos / Math.abs(sumNeg) : null
+  const stdDevR = totalTrades >= 2 ? std : null
+
+  return {
+    run_id: runIdForSeed,
+    summary: {
+      totalTrades,
+      wins,
+      losses,
+      breakevens,
+      winRate,
+      totalRR,
+      avgRR,
+      expectancy: avgRR,
+    },
+    drawdown: { maxDrawdownR: maxDrawdown },
+    streaks: { maxWinningStreak, maxLosingStreak },
+    riskAdjusted: { sharpePerTrade, sortinoPerTrade, profitFactor, stdDevR },
+    equityCurve,
+    rrSeries,
+    hourlyByEntryUtc,
+  }
+}
+
 function buildMonteCarloPercentiles(
   rrSeries: number[],
   simCount: number,
@@ -126,6 +275,7 @@ function buildMonteCarloPercentiles(
 export function RunDashboardPage({ run, onBack }: RunDashboardPageProps) {
   const [stats, setStats] = useState<RunStats | null>(null)
   const [entries, setEntries] = useState<EntryMap[]>([])
+  const [selectedSymbols, setSelectedSymbols] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [mcMode, setMcMode] = useState<MonteCarloMode>('bootstrap')
@@ -144,6 +294,8 @@ export function RunDashboardPage({ run, onBack }: RunDashboardPageProps) {
     setLoading(true)
     setError(null)
     setStats(null)
+    setEntries([])
+    setSelectedSymbols([])
 
     const runId = run.run_key ? undefined : run.run_id
     const runKey = run.run_key ?? undefined
@@ -168,6 +320,20 @@ export function RunDashboardPage({ run, onBack }: RunDashboardPageProps) {
 
   const runLabel = run.run_key ?? `Run ${run.run_id}`
 
+  const availableSymbols = useMemo(() => {
+    return Array.from(new Set(entries.map((e) => e.symbol))).sort()
+  }, [entries])
+
+  const filteredEntries = useMemo(() => {
+    if (selectedSymbols.length === 0) return entries
+    const s = new Set(selectedSymbols)
+    return entries.filter((e) => s.has(e.symbol))
+  }, [entries, selectedSymbols])
+
+  const derivedStats = useMemo(() => {
+    return computeStatsFromEntries(filteredEntries, run.run_id)
+  }, [filteredEntries, run.run_id])
+
   const equityContainerRef = useRef<HTMLDivElement>(null)
   const drawdownContainerRef = useRef<HTMLDivElement>(null)
   const monteCarloContainerRef = useRef<HTMLDivElement>(null)
@@ -176,24 +342,27 @@ export function RunDashboardPage({ run, onBack }: RunDashboardPageProps) {
   const monteCarloChartRef = useRef<IChartApi | null>(null)
 
   const equityData = useMemo(() => {
-    return buildTimeSeriesFromEquity(stats, (p) => p.equity)
-  }, [stats])
+    return buildTimeSeriesFromEquity(derivedStats, (p) => p.equity)
+  }, [derivedStats])
 
   const drawdownData = useMemo(() => {
-    return buildTimeSeriesFromEquity(stats, (p) => -p.drawdown)
-  }, [stats])
+    return buildTimeSeriesFromEquity(derivedStats, (p) => -p.drawdown)
+  }, [derivedStats])
 
-  const realizedEquityData = useMemo(() => buildTimeSeriesFromEquity(stats, (p) => p.equity), [stats])
+  const realizedEquityData = useMemo(
+    () => buildTimeSeriesFromEquity(derivedStats, (p) => p.equity),
+    [derivedStats],
+  )
 
   const monteCarlo = useMemo(() => {
-    if (!stats?.rrSeries?.length) return { p10: [], p50: [], p90: [] }
+    if (!derivedStats?.rrSeries?.length) return { p10: [], p50: [], p90: [] }
     return buildMonteCarloPercentiles(
-      stats.rrSeries,
+      derivedStats.rrSeries,
       simCount,
       mcMode,
       (run.run_id * 97 + 1337) >>> 0,
     )
-  }, [stats, simCount, mcMode, run.run_id])
+  }, [derivedStats, simCount, mcMode, run.run_id])
 
   const monteCarloP10Data = useMemo(() => {
     if (!realizedEquityData.length) return []
@@ -208,26 +377,7 @@ export function RunDashboardPage({ run, onBack }: RunDashboardPageProps) {
     return monteCarlo.p90.map((v, i) => ({ time: realizedEquityData[i]?.time ?? realizedEquityData[realizedEquityData.length - 1].time, value: v }))
   }, [monteCarlo, realizedEquityData])
 
-  const hourlyStats = useMemo<HourlyEntryStat[]>(() => {
-    const rows = stats?.hourlyByEntryUtc ?? []
-    if (rows.length === 24) return rows
-    const byHour = new Map<number, HourlyEntryStat>()
-    for (const row of rows) byHour.set(row.hour, row)
-    return Array.from({ length: 24 }, (_, hour) => {
-      return (
-        byHour.get(hour) ?? {
-          hour,
-          trades: 0,
-          wins: 0,
-          losses: 0,
-          breakevens: 0,
-          winRate: 0,
-          avgRR: 0,
-          totalRR: 0,
-        }
-      )
-    })
-  }, [stats])
+  const hourlyStats = useMemo<HourlyEntryStat[]>(() => derivedStats.hourlyByEntryUtc, [derivedStats])
 
   const sortedHourlyStats = useMemo<HourlyEntryStat[]>(() => {
     const rows = hourlyStats.slice()
@@ -267,7 +417,7 @@ export function RunDashboardPage({ run, onBack }: RunDashboardPageProps) {
 
   const pipOutcomes = useMemo<PipOutcomeRow[]>(() => {
     const groups = new Map<number, Omit<PipOutcomeRow, 'winRate'>>()
-    for (const e of entries) {
+    for (const e of filteredEntries) {
       if (!Number.isFinite(e.slPips)) continue
       const pipInt = Math.round(e.slPips)
       const reason = e.exitReason
@@ -296,7 +446,7 @@ export function RunDashboardPage({ run, onBack }: RunDashboardPageProps) {
       })
     }
     return rows
-  }, [entries])
+  }, [filteredEntries])
 
   const sortedPipOutcomes = useMemo<PipOutcomeRow[]>(() => {
     const rows = pipOutcomes.slice()
@@ -472,6 +622,7 @@ export function RunDashboardPage({ run, onBack }: RunDashboardPageProps) {
             Back to run
           </button>
           <h2 style={{ margin: 0 }}>Run Dashboard: {runLabel}</h2>
+          <SymbolMultiSelect options={availableSymbols} selected={selectedSymbols} onChange={setSelectedSymbols} />
           <button
             type="button"
             className="btn-export"
@@ -495,37 +646,37 @@ export function RunDashboardPage({ run, onBack }: RunDashboardPageProps) {
       {error && <p style={{ color: '#c62828' }}>{error}</p>}
       {configDownloadError && <p style={{ color: '#c62828' }}>{configDownloadError}</p>}
 
-      {!loading && !error && stats && (
+      {!loading && !error && derivedStats && (
         <>
           <section className="dashboard-kpi-grid">
           <div className="dashboard-card">
             <h3>Risk-adjusted (per trade)</h3>
-            <p>Sharpe (per trade): {fmtOrDash(stats.riskAdjusted.sharpePerTrade, 3)}</p>
-            <p>Sortino (per trade): {fmtOrDash(stats.riskAdjusted.sortinoPerTrade, 3)}</p>
-            <p>Profit factor: {fmtOrDash(stats.riskAdjusted.profitFactor, 3)}</p>
-            <p>σ (R): {fmtOrDash(stats.riskAdjusted.stdDevR, 3)}</p>
+            <p>Sharpe (per trade): {fmtOrDash(derivedStats.riskAdjusted.sharpePerTrade, 3)}</p>
+            <p>Sortino (per trade): {fmtOrDash(derivedStats.riskAdjusted.sortinoPerTrade, 3)}</p>
+            <p>Profit factor: {fmtOrDash(derivedStats.riskAdjusted.profitFactor, 3)}</p>
+            <p>σ (R): {fmtOrDash(derivedStats.riskAdjusted.stdDevR, 3)}</p>
             <p className="dashboard-note">Per-trade μ/σ on R-multiples; not annualized.</p>
           </div>
 
           <div className="dashboard-card">
             <h3>Summary</h3>
-            <p>Total trades: {stats.summary.totalTrades}</p>
-            <p>Wins/Losses/BE: {stats.summary.wins}/{stats.summary.losses}/{stats.summary.breakevens}</p>
-            <p>Win rate: {fmt(stats.summary.winRate, 1)}%</p>
+            <p>Total trades: {derivedStats.summary.totalTrades}</p>
+            <p>Wins/Losses/BE: {derivedStats.summary.wins}/{derivedStats.summary.losses}/{derivedStats.summary.breakevens}</p>
+            <p>Win rate: {fmt(derivedStats.summary.winRate, 1)}%</p>
           </div>
 
           <div className="dashboard-card">
             <h3>R Metrics</h3>
-            <p>Total RR: {fmt(stats.summary.totalRR, 2)}</p>
-            <p>Avg RR: {fmt(stats.summary.avgRR, 3)}</p>
-            <p>Expectancy: {fmt(stats.summary.expectancy, 3)}</p>
+            <p>Total RR: {fmt(derivedStats.summary.totalRR, 2)}</p>
+            <p>Avg RR: {fmt(derivedStats.summary.avgRR, 3)}</p>
+            <p>Expectancy: {fmt(derivedStats.summary.expectancy, 3)}</p>
           </div>
 
           <div className="dashboard-card">
             <h3>Risk</h3>
-            <p>Max drawdown (R): {fmt(-stats.drawdown.maxDrawdownR, 2)}</p>
-            <p>Max losing streak: {stats.streaks.maxLosingStreak}</p>
-            <p>Max winning streak: {stats.streaks.maxWinningStreak}</p>
+            <p>Max drawdown (R): {fmt(-derivedStats.drawdown.maxDrawdownR, 2)}</p>
+            <p>Max losing streak: {derivedStats.streaks.maxLosingStreak}</p>
+            <p>Max winning streak: {derivedStats.streaks.maxWinningStreak}</p>
           </div>
           </section>
 

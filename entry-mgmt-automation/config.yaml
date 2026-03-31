@@ -5,7 +5,7 @@
 # --- Scan window(s) (Oanda fetch adds buffer before each window "from" for MA warm-up) ---
 scan:
   windows:
-    - from: "2020-01-10T00:00:00Z"
+    - from: "2025-01-10T00:00:00Z"
       to:   "2026-03-28T23:59:59Z"
 
 # --- Run (B2.4: named run; same key overwrites prior raw_trades) ---
@@ -18,18 +18,18 @@ run:
 timeframes:
   # LTF entries
   # entry:     "M5"   # chart TF (Pine: chart period; here set explicitly)
-  # validation: "H2"    # Pine: validationTF "Validation timeframe"
-  # context:   "W"     # Pine: htfTrendTF "Trend timeframe (Context)"
+  # validation: "H1"    # Pine: validationTF "Validation timeframe"
+  # context:   "D"     # Pine: htfTrendTF "Trend timeframe (Context)"
 
   # MTF entries
-  # entry:     "M30"   # chart TF (Pine: chart period; here set explicitly)
-  # validation: "H3"    # Pine: validationTF "Validation timeframe"
-  # context:   "W"     # Pine: htfTrendTF "Trend timeframe (Context)"
+  entry:     "M15"   # chart TF (Pine: chart period; here set explicitly)
+  validation: "H2"    # Pine: validationTF "Validation timeframe"
+  context:   "D"     # Pine: htfTrendTF "Trend timeframe (Context)"
 
   # HTF entries
-  entry:     "H1"   # chart TF (Pine: chart period; here set explicitly)
-  validation: "D"    # Pine: validationTF "Validation timeframe"
-  context:   "W"     # Pine: htfTrendTF "Trend timeframe (Context)"
+  # entry:     "H1"   # chart TF (Pine: chart period; here set explicitly)
+  # validation: "D"    # Pine: validationTF "Validation timeframe"
+  # context:   "W"     # Pine: htfTrendTF "Trend timeframe (Context)"
 
 # --- Entry Detection (Pine: lines 6-10) ---
 entry_detection:
@@ -49,10 +49,10 @@ entry_detection:
 
 # --- Risk Management (Pine: lines 20-23) ---
 risk_management:
-  atrPeriod:     14   # Pine default 14, min 1
-  atrMultiplier: 0.5  # Pine default 1.5, min 0.1 step 0.1 (SL = entry - atr * this)
-  rrBreakEven:   1.3  # Pine default 1.0, min 0.1 step 0.1 (R:R to trigger BE)
-  rrTakeProfit:  4.0  # Pine default 4.0, min 0.1 step 0.1 (R:R for TP)
+  atrPeriod:     10   # Pine default 14, min 1
+  atrMultiplier: 0.7  # Pine default 1.5, min 0.1 step 0.1 (SL = entry - atr * this)
+  rrBreakEven:   1.5 # Pine default 1.0, min 0.1 step 0.1 (R:R to trigger BE)
+  rrTakeProfit:  5.0  # Pine default 4.0, min 0.1 step 0.1 (R:R for TP)
 
 # --- MTF fetch (Oanda): parallelize symbols; each symbol fetches entry/context/validation in parallel ---
 # Higher values speed up multi-symbol runs but may trigger Oanda rate limits (429); client retries 429 with backoff.
@@ -64,5 +64,5 @@ symbols:
   - "XAU_USD"
   - "USD_JPY"
   - "GBP_USD"
-  - "AUD_USD"
+  # - "AUD_USD"
   - "USD_CAD"

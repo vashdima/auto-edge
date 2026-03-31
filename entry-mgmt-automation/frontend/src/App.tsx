@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { downloadRunConfig, fetchEntries, fetchRuns, fetchTradeBuffers, type TradeBuffersPatch } from './api'
 import type { EntryMap, Run } from './types'
 import { EntryCandlesChart } from './components/EntryCandlesChart'
@@ -6,6 +6,7 @@ import { ContextCandlesChart } from './components/ContextCandlesChart'
 import { ValidationCandlesChart } from './components/ValidationCandlesChart'
 import { RunDashboardPage } from './components/RunDashboardPage'
 import { RunSelector } from './components/RunSelector'
+import { SymbolMultiSelect } from './components/SymbolMultiSelect'
 import { TradeHistoryTable } from './components/TradeHistoryTable'
 
 const STORAGE_KEY_RUN = 'entry_maps_selected_run'
@@ -48,6 +49,7 @@ export function App() {
   const [runs, setRuns] = useState<Run[]>([])
   const [selectedRun, setSelectedRun] = useState<Run | null>(null)
   const [entries, setEntries] = useState<EntryMap[]>([])
+  const [selectedSymbols, setSelectedSymbols] = useState<string[]>([])
   const [selectedTradeIds, setSelectedTradeIds] = useState<number[]>([])
   const [highlightedIndex, setHighlightedIndex] = useState<number | null>(null)
   const [showResults, setShowResults] = useState(false)
@@ -57,6 +59,16 @@ export function App() {
   const [error, setError] = useState<string | null>(null)
   const [configDownloadError, setConfigDownloadError] = useState<string | null>(null)
   const bufferLoadedIdsRef = useRef<Set<number>>(new Set())
+
+  const availableSymbols = useMemo(() => {
+    return Array.from(new Set(entries.map((e) => e.symbol))).sort()
+  }, [entries])
+
+  const filteredEntries = useMemo(() => {
+    if (selectedSymbols.length === 0) return entries
+    const s = new Set(selectedSymbols)
+    return entries.filter((e) => s.has(e.symbol))
+  }, [entries, selectedSymbols])
 
   const fetchEntriesForRun = useCallback((run: Run) => {
     setLoadingEntries(true)
@@ -127,14 +139,27 @@ export function App() {
   }, [runs, selectedRun])
 
   const highlightedTradeId =
-    highlightedIndex != null && entries[highlightedIndex] != null
-      ? entries[highlightedIndex]!.trade_id
+    highlightedIndex != null && filteredEntries[highlightedIndex] != null
+      ? filteredEntries[highlightedIndex]!.trade_id
       : null
 
   useEffect(() => {
-    if (entries.length === 0 || highlightedIndex != null) return
+    if (filteredEntries.length === 0 || highlightedIndex != null) return
     setHighlightedIndex(0)
-  }, [entries, highlightedIndex])
+  }, [filteredEntries, highlightedIndex])
+
+  // Clamp highlight and selection when filter changes.
+  useEffect(() => {
+    const allowed = new Set(filteredEntries.map((e) => e.trade_id))
+    setSelectedTradeIds((prev) => prev.filter((id) => allowed.has(id)))
+    setHighlightedIndex((prev) => {
+      if (filteredEntries.length === 0) return null
+      if (prev == null) return 0
+      if (prev < 0) return 0
+      if (prev >= filteredEntries.length) return 0
+      return prev
+    })
+  }, [filteredEntries])
 
   useEffect(() => {
     if (selectedRun == null || highlightedTradeId == null) return
@@ -167,6 +192,7 @@ export function App() {
     (run: Run | null) => {
       setSelectedRun(run)
       setEntries([])
+      setSelectedSymbols([])
       setSelectedTradeIds([])
       setHighlightedIndex(null)
       setShowResults(false)
@@ -179,7 +205,7 @@ export function App() {
   )
 
   const highlightedTrade =
-    highlightedIndex != null ? entries[highlightedIndex] ?? null : null
+    highlightedIndex != null ? filteredEntries[highlightedIndex] ?? null : null
 
   const handleToggleTradeId = useCallback((tradeId: number) => {
     setSelectedTradeIds((prev) =>
@@ -190,12 +216,12 @@ export function App() {
   const handleSelectAll = useCallback(
     (checked: boolean) => {
       if (checked) {
-        setSelectedTradeIds(entries.map((e) => e.trade_id))
+        setSelectedTradeIds(filteredEntries.map((e) => e.trade_id))
       } else {
         setSelectedTradeIds([])
       }
     },
-    [entries]
+    [filteredEntries]
   )
 
   const handleExport = useCallback(() => {
@@ -235,6 +261,11 @@ export function App() {
             selectedRunKey={selectedRun?.run_key ?? null}
             loading={loadingRuns}
             onSelect={handleRunSelect}
+          />
+          <SymbolMultiSelect
+            options={availableSymbols}
+            selected={selectedSymbols}
+            onChange={setSelectedSymbols}
           />
           <button
             type="button"
@@ -304,8 +335,8 @@ export function App() {
             const be = list.filter((e) => e.exitReason === 'BE').length
             return { totalTrades, totalRR, w, l, be, pctW: pct(w, totalTrades), pctL: pct(l, totalTrades), pctBe: pct(be, totalTrades) }
           }
-          const all = summary(entries)
-          const ticked = summary(entries.filter((e) => selectedTradeIds.includes(e.trade_id)))
+          const all = summary(filteredEntries)
+          const ticked = summary(filteredEntries.filter((e) => selectedTradeIds.includes(e.trade_id)))
           return (
             <div className="run-summary-block">
               <button
@@ -334,7 +365,7 @@ export function App() {
 
       <section className="trade-section">
         <TradeHistoryTable
-          entries={entries}
+          entries={filteredEntries}
           selectedTradeIds={selectedTradeIds}
           onToggleTradeId={handleToggleTradeId}
           onSelectAll={handleSelectAll}
